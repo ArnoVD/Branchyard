@@ -60,7 +60,7 @@ final class RepoModel: ObservableObject, Identifiable {
     /// The file whose diff is shown (the last one clicked).
     @Published var selectedChangeID: String? {
         didSet {
-            if selectedChangeID != nil { fileInspector = nil }
+            if selectedChangeID != nil { fileInspector = nil; comparison = nil }
             if let id = selectedChangeID {
                 if !selectedChangeIDs.contains(id) { selectedChangeIDs = [id] }
             } else if !selectedChangeIDs.isEmpty {
@@ -88,7 +88,7 @@ final class RepoModel: ObservableObject, Identifiable {
     @Published var selectedCommitSHA: String?
     @Published var commitDetail: CommitDetail?
     @Published var selectedCommitFileID: String? {
-        didSet { if selectedCommitFileID != nil { fileInspector = nil } }
+        didSet { if selectedCommitFileID != nil { fileInspector = nil; comparison = nil } }
     }
     /// File History / Blame of one file, shown in the middle pane instead of the graph.
     @Published var fileInspector: FileInspector?
@@ -98,6 +98,15 @@ final class RepoModel: ObservableObject, Identifiable {
     @Published var blame: Blame?
     @Published var inspectorLoading = false
     @Published var inspectorError: String?
+    /// Two commits / branches / the working copy compared in the middle pane.
+    @Published var comparison: CompareRequest?
+    @Published var comparisonResult: Comparison?
+    @Published var compareFileID: String?
+    @Published var compareDiff: [DiffLine] = []
+    @Published var compareLoading = false
+    @Published var compareError: String?
+    /// "Mark for Compare": the base of the next comparison.
+    @Published var compareMark: CompareSide?
     /// Bumped to ask the graph to scroll to the selected commit.
     @Published var scrollRequest = 0
 
@@ -169,7 +178,9 @@ final class RepoModel: ObservableObject, Identifiable {
 
     var selectedChange: FileChange? { status.allChanges.first { $0.id == selectedChangeID } }
     /// A file's diff (working copy or commit) is open in the middle pane.
-    var showsFileDiff: Bool { selectedChangeID != nil || selectedCommitFileID != nil || fileInspector != nil }
+    var showsFileDiff: Bool {
+        selectedChangeID != nil || selectedCommitFileID != nil || fileInspector != nil || comparison != nil
+    }
     var selectedChanges: [FileChange] { status.allChanges.filter { selectedChangeIDs.contains($0.id) } }
 
     /// Called by the file lists. Keeps the diff on the file that was just added, if any.
@@ -230,6 +241,7 @@ final class RepoModel: ObservableObject, Identifiable {
             let (newStatus, newBranches, newStashes, newOp, newLog, newTags, newRemotes) = try await (s, b, st, op, lg, tg, rm)
             if remotes != newRemotes { remotes = newRemotes }
             if tags != newTags { tags = newTags }
+            let changed = status != newStatus || branches != newBranches
             if status != newStatus { status = newStatus }
             let pending = newStatus.upstream != nil ? newStatus.ahead
                 : (newStatus.branch == nil ? 0 : await repo.unpushedCount())
@@ -241,6 +253,7 @@ final class RepoModel: ObservableObject, Identifiable {
             if lastFetched != fetched { lastFetched = fetched }
             updateGraph(newLog)
             loaded = true
+            if changed, comparison != nil { reloadComparison() }
 
             if opState == .merging, commitMessage.isEmpty, let message = await repo.mergeMessage() {
                 commitMessage = message
@@ -324,6 +337,7 @@ final class RepoModel: ObservableObject, Identifiable {
         selectedChangeID = nil
         selectedCommitFileID = nil
         fileInspector = nil
+        comparison = nil
     }
 
     func branch(named name: String, remote: Bool) -> Branch? {

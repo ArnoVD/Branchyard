@@ -25,6 +25,7 @@ extension RepoModel {
         closeSearch()
         selectedChangeID = nil
         selectedCommitFileID = nil
+        comparison = nil
         let onDisk = FileManager.default.fileExists(atPath: repo.url.appendingPathComponent(path).path)
         fileInspector = FileInspector(path: path, mode: mode, blameRevision: blameAt ?? (onDisk ? nil : (commit ?? "HEAD")))
         fileRevisions = []

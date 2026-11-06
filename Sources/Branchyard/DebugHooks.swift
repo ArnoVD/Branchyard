@@ -10,6 +10,8 @@ import AppKit
 /// - `BRANCHYARD_SEARCH=<text>` opens commit search with that text after 1.5 s.
 /// - `BRANCHYARD_PALETTE=<text>` opens the command palette with that text typed after 1.5 s.
 /// - `BRANCHYARD_FILE=<path>[:blame]` opens File History (or Blame) of that file after 1.5 s.
+/// - `BRANCHYARD_COMPARE=<base>..<target>[:commits]` compares two revisions after 1.5 s; `...`
+///   compares since the common ancestor, an empty target is the working copy.
 /// - `BRANCHYARD_RIGHTCLICK=<x>,<y>` (window points, from the top left) sends a right-click there
 ///   after 4 s, logs any menu that opens with its screen frame, then quits.
 enum DebugHooks {
@@ -55,6 +57,18 @@ enum DebugHooks {
             let path = blame ? String(spec.dropLast(6)) : spec
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 state.selectedTab?.inspectFile(path, mode: blame ? .blame : .history)
+            }
+        }
+        if var spec = env["BRANCHYARD_COMPARE"] {
+            let commits = spec.hasSuffix(":commits")
+            if commits { spec = String(spec.dropLast(8)) }
+            let since = spec.contains("...")
+            let parts = spec.components(separatedBy: since ? "..." : "..")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                guard let tab = state.selectedTab, parts.count == 2 else { return }
+                let target = parts[1].isEmpty ? CompareSide.workingCopy : CompareSide(rev: parts[1], title: parts[1])
+                tab.compare(CompareSide(rev: parts[0], title: parts[0]), target, sinceMergeBase: since)
+                if commits { tab.setCompareTab(.commits) }
             }
         }
         if let message = env["BRANCHYARD_COMMIT"] {

@@ -204,6 +204,10 @@ struct CommandPalette: View {
                 list.append(PaletteCommand(id: "merge:" + branch.id, title: "Merge \(branch.name) into \(current)",
                                            icon: "arrow.triangle.merge", run: { m.merge(branch) }))
             }
+            for branch in m.branches where !branch.isCurrent && branch.nameWithoutRemote != "HEAD" {
+                list.append(PaletteCommand(id: "cmp:" + branch.id, title: "Compare \(branch.name) with \(current)",
+                                           icon: "arrow.left.arrow.right", run: { m.compare(branch) }))
+            }
         }
         return list
     }

@@ -301,6 +301,9 @@ struct BranchesPanel: View {
                     items.append(.action("Merge \(branch.name) into \(current)") { model.merge(branch) })
                 }
             }
+            if !branch.isCurrent, let current = model.currentBranchName {
+                items.append(.action("Compare with \(current)") { model.compare(branch) })
+            }
             items.append(.action("New Branch from \(branch.name)…") {
                 model.newBranchRequest = NewBranchRequest(startPoint: branch.name)
             })

@@ -172,7 +172,7 @@ extension CommitDetailPanel {
     }
 }
 
-private struct CommitFileRow: View {
+struct CommitFileRow: View {
     let file: CommitFile
 
     var body: some View {

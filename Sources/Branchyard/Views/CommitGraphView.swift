@@ -180,7 +180,9 @@ private struct CommitRowView: View {
         .opacity(match == false && !isSelected ? 0.35 : 1)
         .background(background)
         .contentShape(Rectangle())
-        .onTapGesture { model.selectCommit(commit.sha) }
+        .onTapGesture {
+            if model.commandKeyDown { model.commandClick(commit) } else { model.selectCommit(commit.sha) }
+        }
         .onHover { hovering = $0 }
         .contextMenu { menu }
     }
@@ -231,7 +233,26 @@ private struct CommitRowView: View {
     }
 
     @ViewBuilder
+    private var compareMenu: some View {
+        let side: CompareSide = commit.isWIP ? .workingCopy : .commit(commit)
+        if let mark = model.compareMark, mark != side {
+            Button("Compare with \(mark.title)") { model.compareMark = nil; model.commandClick(commit) }
+        }
+        if !commit.isWIP {
+            Button("Compare with Working Copy") { model.compare(side, .workingCopy) }
+            if !isHead, let head = model.graph.first(where: { $0.commit.sha == model.status.headOID })?.commit {
+                Button("Compare with \(model.currentBranchName ?? "HEAD")") {
+                    model.compare(side, model.branches.first(where: \.isCurrent).map(CompareSide.branch) ?? .commit(head))
+                }
+            }
+            Button("Mark for Compare") { model.markForCompare(commit) }
+        }
+    }
+
+    @ViewBuilder
     private var menu: some View {
+        compareMenu
+        if !commit.isWIP || model.compareMark != nil { Divider() }
         if !commit.isWIP {
             Button("Create Branch Here…") { model.newBranchRequest = NewBranchRequest(startPoint: commit.sha) }
             Button("Create Tag Here…") { model.newTagRequest = NewTagRequest(sha: commit.sha, subject: commit.subject) }
@@ -505,6 +526,9 @@ private struct RefLabels: View {
             }
             Button("New Branch from \(branch.name)…") {
                 model.newBranchRequest = NewBranchRequest(startPoint: branch.name)
+            }
+            if !branch.isCurrent, let current = model.currentBranchName {
+                Button("Compare \(branch.name) with \(current)") { model.compare(branch) }
             }
         }
         Button("Copy Name") { model.copyToPasteboard(label.name, what: label.name) }

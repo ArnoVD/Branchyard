@@ -7,7 +7,9 @@ struct DetailPanel: View {
 
     var body: some View {
         Group {
-            if let inspector = model.fileInspector {
+            if let request = model.comparison {
+                CompareView(model: model, request: request)
+            } else if let inspector = model.fileInspector {
                 FileInspectorView(model: model, inspector: inspector)
             } else if let change = model.selectedChange {
                 VStack(spacing: 0) {
@@ -459,6 +461,8 @@ private struct DiffModeBar: View {
         HStack(spacing: 10) {
             if let badge {
                 Text(badge)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color.byAccent)
                     .padding(.horizontal, 8)

@@ -50,6 +50,11 @@ The Pull button's dropdown switches the mode too.
   person buttons above a diff). History lists every commit that changed the file, following
   renames, with each change; Blame shows who last changed each line. Click a blame line to
   jump to that change; right-click a commit to blame the file as it was then.
+- **Compare:** right-click a commit → Compare with Working Copy, Compare with your branch or
+  Mark for Compare (then Compare with it on another commit), or select a commit and ⌘-click a
+  second one. Right-click a branch → Compare with your branch. Files shows every changed file
+  with its diff, Commits shows what each side has that the other doesn't; "Since split" limits
+  it to what changed since the branches split off, like a pull request.
 - **Amend:** Commit options → "Amend previous commit" rewrites the last commit with the
   staged files and the edited message.
 - **Force push:** when the remote has commits you don't have, Push offers Force Push

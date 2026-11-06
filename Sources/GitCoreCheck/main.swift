@@ -594,5 +594,32 @@ check(oldBlame.lines.map(\.text) == ["one", "two changed"], "blame at an older c
 let none = try await fr.fileHistory("missing.txt")
 check(none.isEmpty, "no history for an unknown file")
 
+// MARK: compare
+try await sh(fh, "checkout", "-q", "--", "new.txt")
+try await sh(fh, "checkout", "-q", "-b", "side", "HEAD~2")
+try write(fh, "other.txt", "side change\n")
+try await fr.stage(["other.txt"]); try await fr.commit(message: "side change")
+try await sh(fh, "checkout", "-q", "main")
+let cmpAll = try await fr.compare("side", "main")
+check(Set(cmpAll.files.map(\.path)) == ["new.txt", "other.txt"], "compare lists every differing file")
+check(cmpAll.ahead.map(\.subject) == ["add line zero", "rename"] && cmpAll.behind.map(\.subject) == ["side change"],
+      "compare lists commits on each side")
+let cmpMB = try await fr.compare("side", "main", sinceMergeBase: true)
+check(cmpMB.files.map(\.path) == ["new.txt"] && cmpMB.files.first?.originalPath == "old name.txt",
+      "compare since the merge base skips the base's own changes")
+let otherDiff = try await fr.diff(of: cmpAll.files.first { $0.path == "other.txt" }!, from: "side", to: "main")
+check(otherDiff.contains { $0.kind == .removed && $0.text == "-side change" } && otherDiff.contains { $0.kind == .added && $0.text == "+y" },
+      "diff of a file between two revisions")
+try write(fh, "new.txt", "zero\none\ntwo changed\nlocal\n")
+let cmpWC = try await fr.compare("HEAD~1", nil)
+check(cmpWC.files.map(\.path) == ["new.txt"] && cmpWC.ahead.map(\.subject) == ["add line zero"] && cmpWC.behind.isEmpty,
+      "compare with the working copy")
+let wcDiff = try await fr.diff(of: cmpWC.files[0], from: "HEAD~1", to: nil)
+check(wcDiff.contains { $0.kind == .added && $0.text == "+local" } && wcDiff.contains { $0.kind == .added && $0.text == "+zero" },
+      "working copy diff includes committed and uncommitted changes")
+let cmpWCMB = try await fr.compare("side", nil, sinceMergeBase: true)
+check(!cmpWCMB.files.contains { $0.path == "other.txt" } && cmpWCMB.files.contains { $0.path == "new.txt" },
+      "working copy since the merge base")
+
 print(failures == 0 ? "\nAll checks passed." : "\n\(failures) check(s) failed.")
 exit(failures == 0 ? 0 : 1)
