@@ -34,7 +34,10 @@ public struct GraphFilter: Sendable, Equatable, Codable {
         // `--exclude` patterns apply to the `--all` after them; `*` also matches "/".
         let excludes = hiddenRefs.sorted().map { "--exclude=" + Self.escapeGlob($0) }
             + hiddenRemotes.sorted().map { "--exclude=refs/remotes/" + Self.escapeGlob($0) + "/*" }
-        return excludes + ["--all"]
+        // A remote's HEAD (origin/HEAD) is an alias that `--all` would still walk; it always points
+        // at one of the remote's branches, so leaving it out never hides anything that's shown.
+        let aliases = excludes.isEmpty ? [] : ["--exclude=refs/remotes/*/HEAD"]
+        return excludes + aliases + ["--all"]
     }
 
     static func escapeGlob(_ text: String) -> String {

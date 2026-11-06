@@ -641,6 +641,9 @@ check(try await sideCommit(hideFilter)?.refs.map(\.name) == ["up/feat/x"],
 hideFilter.hiddenRemotes = ["up"]
 let hiddenSubjects = try await subjects(hideFilter)
 check(!hiddenSubjects.contains("side change") && hiddenSubjects.count == 5, "hiding every branch on a commit hides the commit")
+try await sh(fh, "symbolic-ref", "refs/remotes/up/HEAD", "refs/remotes/up/feat/x")
+let aliasFilter = GraphFilter(hiddenRefs: ["refs/heads/side", "refs/heads/weird", "refs/remotes/up/feat/x"])
+check(try await !subjects(aliasFilter).contains("side change"), "a remote's HEAD alias doesn't keep a hidden branch's commits")
 let soloSide = try await fr.log(filter: GraphFilter(hiddenRefs: ["refs/heads/side"], soloRefs: ["refs/heads/side"]))
 check(soloSide.count == 6 && soloSide.first { $0.subject == "side change" }?.refs.map(\.name) == ["side"]
       && soloSide.first { $0.subject == "add line zero" }?.refs.map(\.name) == ["main"],

@@ -95,6 +95,14 @@ extension RepoModel {
     func unsolo(_ branches: [Branch]) {
         var filter = graphFilter
         filter.soloRefs.subtract(branches.map(\.refName))
+        // Drop the upstreams solo brought along, unless a branch that's still soloed tracks them too.
+        let stillTracked = Set(self.branches.filter { !$0.isRemote && filter.soloRefs.contains($0.refName) }
+            .compactMap(\.upstream))
+        for branch in branches where !branch.isRemote {
+            if let upstream = branch.upstream, !stillTracked.contains(upstream) {
+                filter.soloRefs.remove("refs/remotes/" + upstream)
+            }
+        }
         setGraphFilter(filter)
     }
 
