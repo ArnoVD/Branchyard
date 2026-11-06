@@ -20,6 +20,7 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .ignoresSafeArea(.container, edges: .top)
         .background(WindowConfigurator())
+        .onAppear { DebugHooks.run(state: state) }
         .sheet(isPresented: $state.showClone) {
             CloneSheet()
                 .environmentObject(state)
