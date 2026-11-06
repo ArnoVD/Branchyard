@@ -369,5 +369,81 @@ check(qs.staged.contains { $0.path == "a.txt" && $0.kind == .deleted }
 try await qb.ignore(["/nothing-tracked/"], untrack: ["nothing-tracked"])
 check(true, "untracking a folder with no tracked files is fine")
 
+// MARK: hunk & line staging
+let hk = root.appendingPathComponent("hunks")
+try FileManager.default.createDirectory(at: hk, withIntermediateDirectories: true)
+try await sh(hk, "init", "-b", "main")
+try await sh(hk, "config", "user.name", "Check")
+try await sh(hk, "config", "user.email", "check@example.com")
+try await sh(hk, "config", "commit.gpgsign", "false")
+let hr = Repository(url: hk)
+let numbers = (1...20).map(String.init)
+func lines(_ l: [String]) -> String { l.joined(separator: "\n") + "\n" }
+try write(hk, "f.txt", lines(numbers))
+try await hr.stage(["f.txt"]); try await hr.commit(message: "base")
+
+// Change line 2 and line 18, add two lines at the end.
+var edited = numbers
+edited[1] = "two"; edited[17] = "eighteen"; edited += ["x", "y"]
+try write(hk, "f.txt", lines(edited))
+func fileDiff(staged: Bool) async throws -> [DiffLine] {
+    let s = try await hr.status()
+    return try await hr.diff(for: (staged ? s.staged : s.unstaged).first { $0.path == "f.txt" }!)
+}
+func ids(_ d: [DiffLine], _ texts: String...) -> Set<Int> {
+    Set(d.filter { ($0.kind == .added || $0.kind == .removed) && texts.contains($0.text) }.map(\.id))
+}
+var d = try await fileDiff(staged: false)
+check(PartialPatch.make(path: "f.txt", lines: d, selected: [], direction: .forward) == nil, "no lines picked: no patch")
+try await hr.stageLines(ids(d, "-2", "+two"), of: d, path: "f.txt")
+var index = try await out(hr, "show", ":f.txt") + "\n"
+var expected = numbers; expected[1] = "two"
+check(index == lines(expected), "stage one hunk: only that change in the index")
+check(try String(contentsOf: hk.appendingPathComponent("f.txt"), encoding: .utf8) == lines(edited), "stage lines leaves the file alone")
+
+// Stage only the second of two added lines.
+d = try await fileDiff(staged: false)
+try await hr.stageLines(ids(d, "+y"), of: d, path: "f.txt")
+index = try await out(hr, "show", ":f.txt") + "\n"
+check(index == lines(expected + ["y"]), "stage a single added line")
+
+// Unstage the line 2 change again; "y" stays staged.
+d = try await fileDiff(staged: true)
+try await hr.unstageLines(ids(d, "-2", "+two"), of: d, path: "f.txt")
+index = try await out(hr, "show", ":f.txt") + "\n"
+check(index == lines(numbers + ["y"]), "unstage one hunk")
+
+// Discard the line 18 change from the working tree, then put it back (undo).
+d = try await fileDiff(staged: false)
+let restore = try await hr.discardLines(ids(d, "-18", "+eighteen"), of: d, path: "f.txt")
+var onDisk = try String(contentsOf: hk.appendingPathComponent("f.txt"), encoding: .utf8)
+var withoutEighteen = edited; withoutEighteen[17] = "18"
+check(onDisk == lines(withoutEighteen), "discard one hunk keeps the others")
+try await hr.applyPatch(restore!)
+onDisk = try String(contentsOf: hk.appendingPathComponent("f.txt"), encoding: .utf8)
+check(onDisk == lines(edited), "discarded hunk comes back (undo)")
+
+// Removed lines: stage only one of two deletions.
+try await hr.stage(["f.txt"]); try await hr.commit(message: "edits")
+var fewer = edited; fewer.removeSubrange(4...5)          // drop "5" and "6"
+try write(hk, "f.txt", lines(fewer))
+d = try await fileDiff(staged: false)
+try await hr.stageLines(ids(d, "-6"), of: d, path: "f.txt")
+index = try await out(hr, "show", ":f.txt") + "\n"
+var minusSix = edited; minusSix.remove(at: 5)
+check(index == lines(minusSix), "stage one of two removed lines")
+
+// No newline at the end of the file.
+try await sh(hk, "reset", "-q", "--hard")
+try "a\nb".write(to: hk.appendingPathComponent("g.txt"), atomically: true, encoding: .utf8)
+try await hr.stage(["g.txt"]); try await hr.commit(message: "g")
+try "a\nB\nc".write(to: hk.appendingPathComponent("g.txt"), atomically: true, encoding: .utf8)
+var gs = try await hr.status()
+let gd = try await hr.diff(for: gs.unstaged.first { $0.path == "g.txt" }!)
+try await hr.stageLines(PartialPatch.changedIDs(gd), of: gd, path: "g.txt")
+gs = try await hr.status()
+check(try await out(hr, "show", ":g.txt") == "a\nB\nc" && !gs.unstaged.contains { $0.path == "g.txt" },
+      "stage every line of a file without a final newline")
+
 print(failures == 0 ? "\nAll checks passed." : "\n\(failures) check(s) failed.")
 exit(failures == 0 ? 0 : 1)

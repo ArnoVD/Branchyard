@@ -484,11 +484,12 @@ extension Repository {
         try await git.run(["diff", "--binary", "--no-color", "--no-ext-diff", "--", path]).stdout
     }
 
-    public func applyPatch(_ patch: String) async throws {
+    /// `cached`: apply to the index only. `reverse`: take the patch back out.
+    public func applyPatch(_ patch: String, cached: Bool = false, reverse: Bool = false) async throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("branchyard-\(UUID().uuidString).patch")
         try patch.write(to: file, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: file) }
-        try await git.run(["apply", "--binary", file.path])
+        try await git.run(["apply", "--binary"] + (cached ? ["--cached"] : []) + (reverse ? ["-R"] : []) + [file.path])
     }
 
     public func writeFile(_ path: String, data: Data) throws {

@@ -43,6 +43,9 @@ Settings → Git: fetch automatically (every 1–30 min), pick what the Pull but
 (fast-forward if possible, fast-forward only, or rebase) and push after every commit.
 The Pull button's dropdown switches the mode too.
 
+- **Hunks and lines:** in a file's diff (Hunk or Inline View), use Stage Hunk / Discard Hunk /
+  Unstage Hunk on each `@@` row, or click line numbers to pick lines (Shift-click for a range)
+  and use Stage Lines / Discard Lines. Discards can be undone with ⌘Z.
 - **Amend:** Commit options → "Amend previous commit" rewrites the last commit with the
   staged files and the edited message.
 - **Force push:** when the remote has commits you don't have, Push offers Force Push

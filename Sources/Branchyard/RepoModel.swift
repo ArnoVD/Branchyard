@@ -69,7 +69,12 @@ final class RepoModel: ObservableObject, Identifiable {
     }
     /// All selected files (⌘-click / ⇧-click), always within one list.
     @Published private(set) var selectedChangeIDs: Set<String> = []
-    @Published var diff: [DiffLine] = []
+    @Published var diff: [DiffLine] = [] {
+        // Line ids only mean something within one diff.
+        didSet { if diff != oldValue, !selectedLineIDs.isEmpty { selectedLineIDs = [] } }
+    }
+    /// Added/removed lines picked in the diff, for staging, unstaging or discarding just those.
+    @Published var selectedLineIDs: Set<Int> = []
     @Published var conflict: ConflictFile?
     @Published var conflictChoices: [Int: ConflictFile.Resolution] = [:]
     @Published var detailError: String?
@@ -474,6 +479,8 @@ final class RepoModel: ObservableObject, Identifiable {
                     try await repo.applyPatch(patch)
                 }
             }
+        case .discardLines(_, let patch):
+            try await repo.applyPatch(patch)
         }
     }
 
@@ -494,6 +501,8 @@ final class RepoModel: ObservableObject, Identifiable {
             try await repo.deleteBranch(name, force: true)
         case .discard(let files):
             for file in files { try await repo.discard(file.change) }
+        case .discardLines(_, let patch):
+            try await repo.applyPatch(patch, reverse: true)
         }
     }
 
@@ -682,6 +691,42 @@ final class RepoModel: ObservableObject, Identifiable {
             }
             for change in changes { try await self.repo.discard(change) }
             return saved.isEmpty ? nil : .discard(saved)
+        }
+    }
+
+    /// Stage / unstage / discard single lines or hunks: modified files, and files added to the index.
+    var supportsLineStaging: Bool {
+        guard let change = selectedChange else { return false }
+        switch change.area {
+        case .unstaged: return change.kind == .modified
+        case .staged: return change.kind == .modified || change.kind == .added
+        case .conflicted: return false
+        }
+    }
+
+    /// `hunk`: the ids are one whole hunk (only changes the toast).
+    func applyLines(_ ids: Set<Int>, _ action: LineAction, hunk: Bool = false) {
+        guard let change = selectedChange, !ids.isEmpty else { return }
+        let lines = diff
+        let path = change.path
+        let what = hunk ? "Hunk" : (ids.count == 1 ? "Line" : "\(ids.count) Lines")
+        selectedLineIDs = []
+        switch action {
+        case .stage:
+            quick(Toast(title: "Staged \(what)", detail: change.fileName)) {
+                try await self.repo.stageLines(ids, of: lines, path: path)
+            }
+        case .unstage:
+            quick(Toast(title: "Unstaged \(what)", detail: change.fileName)) {
+                try await self.repo.unstageLines(ids, of: lines, path: path)
+            }
+        case .discard:
+            runUndoable("Discarding…") {
+                guard let patch = try await self.repo.discardLines(ids, of: lines, path: path) else { return nil }
+                self.toastTitle = "Discarded \(what)"
+                self.toastDetail = "\(change.fileName) · ⌘Z to undo"
+                return .discardLines(path: path, patch: patch)
+            }
         }
     }
 
@@ -1021,6 +1066,8 @@ enum UndoStep {
     case createBranch(name: String, sha: String, previous: HeadRef)
     case deleteBranch(name: String, sha: String)
     case discard([DiscardedFile])
+    /// Some lines of one file; `patch` puts them back.
+    case discardLines(path: String, patch: String)
 
     var title: String {
         switch self {
@@ -1032,6 +1079,8 @@ enum UndoStep {
         case .deleteBranch(let name, _): return "delete branch \(name)"
         case .discard(let files):
             return files.count == 1 ? "discard \(files[0].change.fileName)" : "discard \(files.count) files"
+        case .discardLines(let path, _):
+            return "discard lines in \((path as NSString).lastPathComponent)"
         }
     }
 }
@@ -1043,3 +1092,5 @@ struct DiscardedFile {
     let patch: String?
     let data: Data?
 }
+
+enum LineAction { case stage, unstage, discard }

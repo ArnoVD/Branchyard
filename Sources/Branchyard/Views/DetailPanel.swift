@@ -17,7 +17,11 @@ struct DetailPanel: View {
                     } else if change.area == .conflicted {
                         ConflictResolverView(model: model, change: change)
                     } else {
-                        DiffView(lines: model.diff, path: change.path, badge: change.area == .staged ? "Staged" : "Unstaged")
+                        DiffView(lines: model.diff, path: change.path, badge: change.area == .staged ? "Staged" : "Unstaged",
+                                 lineActions: model.supportsLineStaging ? LineActions(
+                                    staged: change.area == .staged,
+                                    selected: $model.selectedLineIDs,
+                                    apply: { ids, action, hunk in model.applyLines(ids, action, hunk: hunk) }) : nil)
                     }
                 }
             } else if let file = model.selectedCommitFile, let commit = model.commitDetail?.commit {
@@ -261,12 +265,24 @@ struct DiffStyle {
     }
 }
 
+/// Stage / unstage / discard single hunks or lines from a working-copy diff.
+struct LineActions {
+    let staged: Bool
+    let selected: Binding<Set<Int>>
+    /// (line ids, action, whole hunk?)
+    let apply: (Set<Int>, LineAction, Bool) -> Void
+}
+
 struct DiffView: View {
     let lines: [DiffLine]
     /// File path, used to pick the language for syntax colors.
     var path: String? = nil
     /// "Unstaged", "Staged" or a commit SHA, shown at the left of the mode bar.
     var badge: String? = nil
+    /// Working-copy diffs: hunk buttons and clickable lines (Hunk and Inline View only).
+    var lineActions: LineActions? = nil
+    /// Where a Shift-click range starts.
+    @ViewState private var anchor: Int?
 
     @AppStorage("diffLayout") private var layout: DiffLayout = .hunk
     @AppStorage("diffFileView") private var fileView = false
@@ -282,7 +298,67 @@ struct DiffView: View {
             DiffModeBar(badge: badge, layout: $layout, fileView: $fileView)
             Divider()
             content
+            if let actions = activeLineActions, !actions.selected.wrappedValue.isEmpty {
+                Divider()
+                selectionBar(actions)
+            }
         }
+    }
+
+    /// Line actions work on the unified layouts, where every changed line has its own row.
+    private var activeLineActions: LineActions? {
+        fileView || layout == .split ? nil : lineActions
+    }
+
+    private func selectionBar(_ actions: LineActions) -> some View {
+        let ids = actions.selected.wrappedValue
+        return HStack(spacing: 8) {
+            Text(ids.count == 1 ? "1 line selected" : "\(ids.count) lines selected")
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Clear") { actions.selected.wrappedValue = [] }
+            if actions.staged {
+                Button("Unstage Lines") { actions.apply(ids, .unstage, false) }
+                    .buttonStyle(.borderedProminent)
+            } else {
+                Button("Discard Lines") { actions.apply(ids, .discard, false) }
+                Button("Stage Lines") { actions.apply(ids, .stage, false) }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color.byToolbar)
+    }
+
+    /// Click: pick or drop one line. Shift-click: pick every changed line from the last click.
+    private func toggle(_ line: DiffLine, in rows: [DiffLine], actions: LineActions) {
+        var picked = actions.selected.wrappedValue
+        let shift = NSEvent.modifierFlags.contains(.shift)
+        if shift, let anchor, let from = rows.firstIndex(where: { $0.id == anchor }),
+           let to = rows.firstIndex(where: { $0.id == line.id }) {
+            for row in rows[min(from, to)...max(from, to)] where row.kind == .added || row.kind == .removed {
+                picked.insert(row.id)
+            }
+        } else if picked.contains(line.id) {
+            picked.remove(line.id)
+        } else {
+            picked.insert(line.id)
+        }
+        anchor = line.id
+        actions.selected.wrappedValue = picked
+    }
+
+    /// The changed line ids under each `@@` header row.
+    private func hunkMembers(_ rows: [DiffLine]) -> [Int: Set<Int>] {
+        var members: [Int: Set<Int>] = [:]
+        var current: Int?
+        for row in rows {
+            if row.kind == .hunk { current = row.id; members[row.id] = [] }
+            else if let current, row.kind == .added || row.kind == .removed { members[current]?.insert(row.id) }
+        }
+        return members
     }
 
     @ViewBuilder private var content: some View {
@@ -299,6 +375,18 @@ struct DiffView: View {
         }
     }
 
+    @ViewBuilder
+    private func hunkButtons(_ ids: Set<Int>?, actions: LineActions?) -> some View {
+        if let ids, !ids.isEmpty, let actions {
+            if actions.staged {
+                HunkButton(title: "Unstage Hunk", prominent: true) { actions.apply(ids, .unstage, true) }
+            } else {
+                HunkButton(title: "Discard Hunk", prominent: false) { actions.apply(ids, .discard, true) }
+                HunkButton(title: "Stage Hunk", prominent: true) { actions.apply(ids, .stage, true) }
+            }
+        }
+    }
+
     private func style(fileMode: Bool) -> DiffStyle {
         DiffStyle(font: EditorPrefs.font(family: fontFamily, size: fontSize), size: fontSize,
                   tabSize: tabSize, lineNumbers: lineNumbers, wrap: wordWrap, fileMode: fileMode,
@@ -306,10 +394,19 @@ struct DiffView: View {
     }
 
     private func unified(_ rows: [DiffLine], style: DiffStyle) -> some View {
-        GeometryReader { geo in
+        let actions = style.fileMode ? nil : activeLineActions
+        let members = actions == nil ? [:] : hunkMembers(rows)
+        let picked = actions?.selected.wrappedValue ?? []
+        return GeometryReader { geo in
             ScrollView(style.wrap ? [.vertical] : [.vertical, .horizontal]) {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(rows) { DiffRow(line: $0, style: style) }
+                    ForEach(rows) { line in
+                        let changed = line.kind == .added || line.kind == .removed
+                        DiffRow(line: line, style: style,
+                                selected: picked.contains(line.id),
+                                onGutterClick: actions != nil && changed ? { toggle(line, in: rows, actions: actions!) } : nil,
+                                hunkButtons: { hunkButtons(members[line.id], actions: actions) })
+                    }
                 }
                 // At least as wide as the pane, so line colors run edge to edge; color stops at the last line.
                 .frame(minWidth: geo.size.width, maxWidth: style.wrap ? geo.size.width : nil, alignment: .topLeading)
@@ -384,11 +481,37 @@ private struct DiffModeBar: View {
     }
 }
 
-private struct DiffRow: View {
+/// Small button on a hunk's `@@` row.
+private struct HunkButton: View {
+    let title: String
+    let prominent: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(prominent ? Color.white : .primary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .background(RoundedRectangle(cornerRadius: 5)
+                    .fill(prominent ? Color.byAccent : Color.primary.opacity(0.10)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct DiffRow<HunkButtons: View>: View {
     let line: DiffLine
     let style: DiffStyle
+    var selected = false
+    /// Set when the line can be picked for line staging: clicking the gutter toggles it.
+    var onGutterClick: (() -> Void)? = nil
+    @ViewBuilder var hunkButtons: () -> HunkButtons
 
     private var background: Color {
+        if selected { return Color.byAccent.opacity(0.28) }
         switch line.kind {
         case .added: return DiffColors.added
         case .removed: return DiffColors.removed
@@ -409,27 +532,53 @@ private struct DiffRow: View {
             EmptyView()
         } else {
             HStack(alignment: .top, spacing: 0) {
-                if style.lineNumbers {
-                    if style.fileMode {
-                        number(line.newNumber ?? line.oldNumber)
-                    } else {
-                        number(line.oldNumber)
-                        number(line.newNumber)
-                    }
-                }
-                Text(prefix)
-                    .frame(width: 16)
-                    .foregroundStyle(.secondary)
+                gutter
                 Text(style.highlighted(line))
                     .foregroundStyle(foreground)
                     .fixedSize(horizontal: !style.wrap, vertical: style.wrap)
                     .frame(maxWidth: style.wrap ? .infinity : nil, alignment: .leading)
                     .padding(.trailing, 12)
+                if line.kind == .hunk {
+                    HStack(spacing: 6) { hunkButtons() }
+                        .padding(.trailing, 12)
+                        .frame(minHeight: style.size * 1.5)
+                }
             }
             .font(style.font)
             .frame(maxWidth: .infinity, minHeight: style.size * 1.5, alignment: .leading)
             .background(background)
+            .overlay(alignment: .leading) {
+                if selected { Rectangle().fill(Color.byAccent).frame(width: 3) }
+            }
             .textSelection(.enabled)
+        }
+    }
+
+    /// Line numbers and the +/- sign. Clickable for changed lines in a working-copy diff.
+    @ViewBuilder private var gutter: some View {
+        let content = HStack(alignment: .top, spacing: 0) {
+            if style.lineNumbers {
+                if style.fileMode {
+                    number(line.newNumber ?? line.oldNumber)
+                } else {
+                    number(line.oldNumber)
+                    number(line.newNumber)
+                }
+            }
+            Text(selected ? "✓" : prefix)
+                .frame(width: 16)
+                .foregroundStyle(selected ? Color.byAccent : .secondary)
+        }
+        if let onGutterClick {
+            content
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onGutterClick)
+                .onHover { inside in
+                    (inside ? NSCursor.pointingHand : NSCursor.arrow).set()
+                }
+                .help("Click to pick this line, Shift-click for a range")
+        } else {
+            content
         }
     }
 
