@@ -94,13 +94,11 @@ struct ChangesPanel: View {
             List(selection: selection(in: files)) {
                 ForEach(files) { change in
                     FileRow(change: change) { model.toggleStage(change) }
+                        .background(RowMenu { menuItems(for: targets(of: change)) })
                         .tag(change.id)
                 }
             }
             .listStyle(.inset)
-            .contextMenu(forSelectionType: String.self) { ids in
-                menu(for: files.filter { ids.contains($0.id) })
-            }
             .onDeleteCommand {
                 let unstaged = model.selectedChanges.filter { $0.area == .unstaged }
                 if !unstaged.isEmpty { toDiscard = unstaged }
@@ -120,39 +118,43 @@ struct ChangesPanel: View {
         .frame(minHeight: 120, maxHeight: .infinity)
     }
 
-    @ViewBuilder
-    private func menu(for changes: [FileChange]) -> some View {
+    /// Right-click on a selected file acts on the whole selection, otherwise on that file only.
+    private func targets(of change: FileChange) -> [FileChange] {
+        model.selectedChangeIDs.contains(change.id) ? model.selectedChanges : [change]
+    }
+
+    private func menuItems(for changes: [FileChange]) -> [RowMenuItem] {
         let unstaged = changes.filter { $0.area == .unstaged }
         let staged = changes.filter { $0.area == .staged }
         let many = changes.count > 1
+        var items: [RowMenuItem] = []
         if !unstaged.isEmpty {
-            Button(many ? "Stage \(unstaged.count) Files" : "Stage") { model.stage(unstaged) }
-            Button(unstaged.allSatisfy { $0.kind == .untracked }
-                   ? (many ? "Delete \(unstaged.count) Files…" : "Delete File…")
-                   : (many ? "Discard Changes to \(unstaged.count) Files…" : "Discard Changes…")) {
-                toDiscard = unstaged
-            }
+            items.append(.action(many ? "Stage \(unstaged.count) Files" : "Stage") { model.stage(unstaged) })
+            let title = unstaged.allSatisfy { $0.kind == .untracked }
+                ? (many ? "Delete \(unstaged.count) Files…" : "Delete File…")
+                : (many ? "Discard Changes to \(unstaged.count) Files…" : "Discard Changes…")
+            items.append(.action(title) { toDiscard = unstaged })
         }
         if !staged.isEmpty {
-            Button(many ? "Unstage \(staged.count) Files" : "Unstage") { model.unstage(staged) }
+            items.append(.action(many ? "Unstage \(staged.count) Files" : "Unstage") { model.unstage(staged) })
         }
         if changes.count == 1, let change = changes.first {
             if change.area == .conflicted {
-                Button("Use Ours (whole file)") { model.takeWholeFile(change, side: .ours) }
-                Button("Use Theirs (whole file)") { model.takeWholeFile(change, side: .theirs) }
-                Button("Mark Resolved as Is") { model.markResolvedAsIs(change) }
+                items.append(.action("Use Ours (whole file)") { model.takeWholeFile(change, side: .ours) })
+                items.append(.action("Use Theirs (whole file)") { model.takeWholeFile(change, side: .theirs) })
+                items.append(.action("Mark Resolved as Is") { model.markResolvedAsIs(change) })
             }
-            Divider()
-            Button("Open") { model.openInDefaultApp(change.path) }
-            Button("Reveal in Finder") { model.revealInFinder(change.path) }
+            items.append(.divider)
+            items.append(.action("Open") { model.openInDefaultApp(change.path) })
+            items.append(.action("Reveal in Finder") { model.revealInFinder(change.path) })
+        } else {
+            items.append(.divider)
         }
-        if !changes.isEmpty {
-            if many { Divider() }
-            Button(many ? "Copy \(changes.count) Paths" : "Copy Path") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(changes.map(\.path).joined(separator: "\n"), forType: .string)
-            }
-        }
+        items.append(.action(many ? "Copy \(changes.count) Paths" : "Copy Path") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(changes.map(\.path).joined(separator: "\n"), forType: .string)
+        })
+        return items
     }
 }
 

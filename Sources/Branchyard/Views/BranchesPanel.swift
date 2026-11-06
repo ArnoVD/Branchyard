@@ -125,6 +125,7 @@ struct BranchesPanel: View {
         List(selection: $selection) {
             ForEach(rows) { node in
                 row(node)
+                    .background(RowMenu { menuItems(for: node.id) })
                     .listRowInsets(EdgeInsets())
                     .listRowSeparator(.hidden)
             }
@@ -132,8 +133,9 @@ struct BranchesPanel: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 24)
-        .contextMenu(forSelectionType: String.self) { ids in
-            menu(for: ids.first)
+        // The right-click menu comes from RowMenu on each row; this only handles double-click.
+        .contextMenu(forSelectionType: String.self) { _ in
+            EmptyView()
         } primaryAction: { ids in
             if let branch = branch(for: ids.first) { model.checkout(branch) }
         }
@@ -266,35 +268,41 @@ struct BranchesPanel: View {
         return model.tags.first { $0.name == id.dropFirst(2) }
     }
 
-    @ViewBuilder
-    private func menu(for id: String?) -> some View {
+    private func menuItems(for id: String) -> [RowMenuItem] {
         if let branch = branch(for: id) {
+            var items: [RowMenuItem] = []
             if !branch.isCurrent {
-                Button("Checkout \(branch.nameWithoutRemote)") { model.checkout(branch) }
+                items.append(.action("Checkout \(branch.nameWithoutRemote)") { model.checkout(branch) })
                 if let current = model.currentBranchName {
-                    Button("Merge \(branch.name) into \(current)") { model.merge(branch) }
+                    items.append(.action("Merge \(branch.name) into \(current)") { model.merge(branch) })
                 }
             }
-            Button("New Branch from \(branch.name)…") {
+            items.append(.action("New Branch from \(branch.name)…") {
                 model.newBranchRequest = NewBranchRequest(startPoint: branch.name)
-            }
-            Divider()
-            Button("Copy Name") { model.copyToPasteboard(branch.nameWithoutRemote) }
+            })
+            items.append(.divider)
+            items.append(.action("Copy Name") { model.copyToPasteboard(branch.nameWithoutRemote) })
             if !branch.isRemote && !branch.isCurrent {
-                Divider()
-                Button("Delete \(branch.name)…") { branchToDelete = branch }
+                items.append(.divider)
+                items.append(.action("Delete \(branch.name)…") { branchToDelete = branch })
             }
+            return items
         } else if let stash = stash(for: id) {
-            Button("Pop") { model.pop(stash) }
-            Button("Apply (keep stash)") { model.apply(stash) }
-            Divider()
-            Button("Drop…") { stashToDrop = stash }
+            return [
+                .action("Pop") { model.pop(stash) },
+                .action("Apply (keep stash)") { model.apply(stash) },
+                .divider,
+                .action("Drop…") { stashToDrop = stash },
+            ]
         } else if let tag = tag(for: id) {
-            Button("New Branch from \(tag.name)…") {
-                model.newBranchRequest = NewBranchRequest(startPoint: tag.name)
-            }
-            Button("Copy Name") { model.copyToPasteboard(tag.name) }
+            return [
+                .action("New Branch from \(tag.name)…") {
+                    model.newBranchRequest = NewBranchRequest(startPoint: tag.name)
+                },
+                .action("Copy Name") { model.copyToPasteboard(tag.name) },
+            ]
         }
+        return []
     }
 }
 
