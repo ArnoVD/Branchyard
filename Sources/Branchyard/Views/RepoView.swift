@@ -4,6 +4,13 @@ import GitCore
 /// One repository: action bar on top, then branches | diff | changes.
 struct RepoView: View {
     @ObservedObject var model: RepoModel
+    /// You reopened the branches while a diff is showing; folds again once the diff closes.
+    @ViewState private var branchesOpenDuringDiff = false
+    @AppStorage("layout.branchesWidth") private var branchesWidth: Double = 280
+    @AppStorage("layout.changesWidth") private var changesWidth: Double = 340
+    private static let branchesRange: ClosedRange<Double> = 220...440
+    private static let changesRange: ClosedRange<Double> = 280...560
+    private static let middleMin: Double = 380
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,20 +23,41 @@ struct RepoView: View {
             }
             Divider()
             // branches | graph (or a diff) | files to stage + commit (or the picked commit).
-            HSplitView {
-                BranchesPanel(model: model)
-                    .frame(minWidth: 220, idealWidth: 280, maxWidth: 440, maxHeight: .infinity)
-                DetailPanel(model: model)
-                    .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
-                Group {
-                    if model.showsCommitDetail {
-                        CommitDetailPanel(model: model)
+            // A file's diff gets the room: branches fold into a thin rail until you open them again.
+            // Own layout instead of HSplitView, which hands freed space to the right panel.
+            GeometryReader { geo in
+                let folded = model.showsFileDiff && !branchesOpenDuringDiff
+                let total = geo.size.width
+                let right = min(changesWidth, max(Self.changesRange.lowerBound,
+                                                  total - (folded ? 37 : Self.branchesRange.lowerBound + 1) - Self.middleMin - 1))
+                let left = folded ? 36 : min(branchesWidth, max(Self.branchesRange.lowerBound, total - right - Self.middleMin - 2))
+                HStack(spacing: 0) {
+                    if folded {
+                        BranchesRail { branchesOpenDuringDiff = true }
+                            .frame(width: left)
+                        Divider()
                     } else {
-                        ChangesPanel(model: model)
+                        BranchesPanel(model: model)
+                            .frame(width: left)
+                        PaneDivider(width: $branchesWidth, shown: left, grows: .right,
+                                    range: Self.branchesRange.lowerBound...min(Self.branchesRange.upperBound, total - right - Self.middleMin - 2))
                     }
+                    DetailPanel(model: model)
+                        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                        .clipped()
+                    PaneDivider(width: $changesWidth, shown: right, grows: .left,
+                                range: Self.changesRange.lowerBound...min(Self.changesRange.upperBound, total - left - Self.middleMin - 2))
+                    Group {
+                        if model.showsCommitDetail {
+                            CommitDetailPanel(model: model)
+                        } else {
+                            ChangesPanel(model: model)
+                        }
+                    }
+                    .frame(width: right)
+                    .frame(maxHeight: .infinity)
+                    .background(Color.byPanel)
                 }
-                .frame(minWidth: 280, idealWidth: 340, maxWidth: 560, maxHeight: .infinity)
-                .background(Color.byPanel)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .bottomLeading) {
@@ -39,6 +67,9 @@ struct RepoView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .task {
             if !model.loaded { await model.refresh() }
+        }
+        .onChange(of: model.showsFileDiff) {
+            if !model.showsFileDiff { branchesOpenDuringDiff = false }
         }
         .onChange(of: model.selectedChangeID) {
             Task { await model.loadDetail() }
@@ -60,6 +91,72 @@ struct RepoView: View {
         } message: {
             Text(model.errorMessage ?? "")
         }
+    }
+}
+
+// MARK: - Pane layout
+
+/// The line between two panes; drag it to resize the side panel it belongs to.
+private struct PaneDivider: View {
+    enum Side { case left, right }
+    @Binding var width: Double
+    /// The width the panel is drawn at now (may be less than `width` in a narrow window).
+    let shown: Double
+    /// Dragging toward this side makes the panel wider.
+    let grows: Side
+    let range: ClosedRange<Double>
+    @ViewState private var start: Double?
+
+    var body: some View {
+        Divider()
+            .overlay {
+                Color.clear
+                    .frame(width: 9)
+                    .contentShape(Rectangle())
+                    .onHover { inside in
+                        if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { drag in
+                                let base = start ?? shown
+                                start = base
+                                let delta = grows == .right ? drag.translation.width : -drag.translation.width
+                                let upper = max(range.lowerBound, range.upperBound)
+                                width = min(max(base + delta, range.lowerBound), upper)
+                            }
+                            .onEnded { _ in start = nil }
+                    )
+            }
+            .zIndex(1)
+    }
+}
+
+// MARK: - Branches rail
+
+/// What's left of the branches panel while a diff is open: one button to bring it back.
+private struct BranchesRail: View {
+    let expand: () -> Void
+    @ViewState private var hovering = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Button(action: expand) {
+                Image(systemName: "sidebar.left")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(hovering ? .primary : .secondary)
+                    .frame(width: 28, height: 28)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(hovering ? 0.08 : 0)))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering = $0 }
+            .help("Show branches")
+            .padding(.top, 8)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.byPanel)
     }
 }
 

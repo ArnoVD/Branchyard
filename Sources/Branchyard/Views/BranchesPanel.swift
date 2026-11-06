@@ -75,6 +75,8 @@ struct BranchesPanel: View {
                 .font(.system(size: 12))
                 .focused($filterFocused)
                 .onExitCommand { filter = ""; filterFocused = false }
+                // AppKit focuses the first text field in a new window; the filter only on ⌘⌥F or a click.
+                .onAppear { DispatchQueue.main.async { filterFocused = false } }
             if filter.isEmpty {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             } else {

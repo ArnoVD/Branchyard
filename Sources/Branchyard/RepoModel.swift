@@ -81,6 +81,8 @@ final class RepoModel: ObservableObject, Identifiable {
     // MARK: derived
 
     var selectedChange: FileChange? { status.allChanges.first { $0.id == selectedChangeID } }
+    /// A file's diff (working copy or commit) is open in the middle pane.
+    var showsFileDiff: Bool { selectedChangeID != nil || selectedCommitFileID != nil }
     var selectedChanges: [FileChange] { status.allChanges.filter { selectedChangeIDs.contains($0.id) } }
 
     /// Called by the file lists. Keeps the diff on the file that was just added, if any.

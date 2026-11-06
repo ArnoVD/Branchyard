@@ -49,3 +49,5 @@ per command; your ~/.gitconfig is never changed.
 | Close tab | ⇧⌘W |
 
 Double-click a branch to check it out. Right-click branches, stashes and files for more.
+Opening a file's diff folds the branches panel into a thin rail; click its icon to bring it back.
+Drag the lines between panels to resize them.

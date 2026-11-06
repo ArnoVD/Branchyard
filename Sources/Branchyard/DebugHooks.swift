@@ -2,6 +2,7 @@ import AppKit
 
 /// Test hooks driven by environment variables, for checks without touching the real mouse:
 /// - `BRANCHYARD_OPEN=<repo path>` opens that repository in a tab.
+/// - `BRANCHYARD_SELECT_FIRST_FILE=1` opens the diff of the first changed file.
 /// - `BRANCHYARD_RIGHTCLICK=<x>,<y>` (window points, from the top left) sends a right-click there
 ///   after 4 s, logs any menu that opens with its screen frame, then quits.
 enum DebugHooks {
@@ -9,6 +10,13 @@ enum DebugHooks {
     static func run(state: AppState) {
         let env = ProcessInfo.processInfo.environment
         if let path = env["BRANCHYARD_OPEN"] { state.open(URL(fileURLWithPath: path)) }
+        if env["BRANCHYARD_SELECT_FIRST_FILE"] != nil {
+            // Opens the diff of the first changed file once the repository has loaded.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                state.selectedTab?.selectedChangeID = state.selectedTab?.status.allChanges.first?.id
+            }
+        }
+        if let spec = env["BRANCHYARD_DRAG"] { drag(spec) }
         guard let spec = env["BRANCHYARD_RIGHTCLICK"] else { return }
         let parts = spec.split(separator: ",").compactMap { Double($0) }
         guard parts.count == 2 else { return }
@@ -43,5 +51,38 @@ enum DebugHooks {
 
     private static func log(_ text: String) {
         FileHandle.standardError.write(("[debug] " + text + "\n").data(using: .utf8)!)
+    }
+
+    /// `BRANCHYARD_DRAG=x1,y1,x2,y2` (window points, from the top left): presses at the first point
+    /// after 2 s, drags to the second and lets go. The same point twice is a click.
+    @MainActor
+    private static func drag(_ spec: String) {
+        let p = spec.split(separator: ",").compactMap { Double($0) }
+        guard p.count == 4 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            guard let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }) else { return }
+            let height = window.contentView?.frame.height ?? window.frame.height
+            let from = NSPoint(x: p[0], y: height - p[1]), to = NSPoint(x: p[2], y: height - p[3])
+            let before = window.frame.origin
+            var steps: [(NSEvent.EventType, NSPoint)] = [(.leftMouseDown, from)]
+            if from != to {
+                for i in 1...10 {
+                    let t = Double(i) / 10
+                    steps.append((.leftMouseDragged, NSPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t)))
+                }
+            }
+            steps.append((.leftMouseUp, to))
+            for (type, point) in steps {
+                if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                                                  timestamp: ProcessInfo.processInfo.systemUptime,
+                                                  windowNumber: window.windowNumber, context: nil,
+                                                  eventNumber: 0, clickCount: 1, pressure: 1) {
+                    NSApp.postEvent(event, atStart: false)
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                log("drag done, window moved: \(window.frame.origin != before)")
+            }
+        }
     }
 }
