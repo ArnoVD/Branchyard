@@ -107,6 +107,8 @@ final class RepoModel: ObservableObject, Identifiable {
     @Published var compareError: String?
     /// "Mark for Compare": the base of the next comparison.
     @Published var compareMark: CompareSide?
+    /// Branches left out of the graph, or the only ones shown (saved per repository).
+    @Published var graphFilter = GraphFilter()
     /// Bumped to ask the graph to scroll to the selected commit.
     @Published var scrollRequest = 0
 
@@ -172,6 +174,7 @@ final class RepoModel: ObservableObject, Identifiable {
     init(url: URL) {
         repo = Repository(url: url)
         id = repo.url.path
+        graphFilter = GraphFilter.saved(for: id)
     }
 
     // MARK: derived
@@ -235,7 +238,7 @@ final class RepoModel: ObservableObject, Identifiable {
             async let b = repo.branches()
             async let st = repo.stashes()
             async let op = repo.operationState()
-            async let lg = repo.log()
+            async let lg = repo.log(filter: graphFilter)
             async let tg = repo.tags()
             async let rm = repo.remotes()
             let (newStatus, newBranches, newStashes, newOp, newLog, newTags, newRemotes) = try await (s, b, st, op, lg, tg, rm)
@@ -246,7 +249,10 @@ final class RepoModel: ObservableObject, Identifiable {
             let pending = newStatus.upstream != nil ? newStatus.ahead
                 : (newStatus.branch == nil ? 0 : await repo.unpushedCount())
             if unpushed != pending { unpushed = pending }
-            if branches != newBranches { branches = newBranches }
+            if branches != newBranches {
+                branches = newBranches
+                pruneGraphFilter()
+            }
             if stashes != newStashes { stashes = newStashes }
             opState = newOp
             let fetched = fetchHeadDate()
@@ -324,7 +330,13 @@ final class RepoModel: ObservableObject, Identifiable {
         let row = graph.first { row in
             row.commit.refs.contains { ($0.kind == .local || $0.kind == .remote) && $0.name == branch.name }
         }
-        if let row { selectCommit(row.commit.sha, scroll: true) }
+        if let row {
+            selectCommit(row.commit.sha, scroll: true)
+        } else if visibility(of: branch) != .shown {
+            showToast(Toast(title: "\(branch.name) is hidden from the graph",
+                            detail: graphFilter.isSolo ? "Right-click it → Add to Solo" : "Right-click it → Show in Graph",
+                            kind: .info))
+        }
     }
 
     /// Select the commit a tag points at (if it's in the loaded history).

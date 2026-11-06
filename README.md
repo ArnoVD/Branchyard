@@ -55,6 +55,10 @@ The Pull button's dropdown switches the mode too.
   second one. Right-click a branch → Compare with your branch. Files shows every changed file
   with its diff, Commits shows what each side has that the other doesn't; "Since split" limits
   it to what changed since the branches split off, like a pull request.
+- **Hide branches:** hover a branch in the left panel and click the eye to hide it from the
+  graph (or right-click → Hide in Graph); right-click a remote → Hide its branches. Solo shows
+  only that branch and the one you're on. A bar above the graph shows what's hidden, with
+  Show All or Exit Solo. Saved per repository.
 - **Amend:** Commit options → "Amend previous commit" rewrites the last commit with the
   staged files and the edited message.
 - **Force push:** when the remote has commits you don't have, Push offers Force Push

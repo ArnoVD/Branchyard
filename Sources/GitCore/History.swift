@@ -257,14 +257,16 @@ extension Parsers {
 // MARK: - Repository
 
 extension Repository {
-    /// Newest-first history of all branches, remotes and tags.
-    public func log(limit: Int = 1500) async throws -> [Commit] {
-        let r = try await git.run(["-c", "log.showSignature=false", "log", "--all", "--date-order",
+    /// Newest-first history of all branches, remotes and tags, minus what `filter` hides.
+    public func log(limit: Int = 1500, filter: GraphFilter = GraphFilter()) async throws -> [Commit] {
+        let r = try await git.run(["-c", "log.showSignature=false", "log", "--date-order",
                                    "--decorate=full", "-n", String(limit),
-                                   "--format=\(Parsers.logFormat)"], allowFailure: true)
+                                   "--format=\(Parsers.logFormat)"] + filter.revisionArgs + ["--"],
+                                  allowFailure: true)
         // A repo without commits fails here; that's just an empty history.
         guard r.succeeded else { return [] }
-        return Parsers.log(r.stdout)
+        let commits = Parsers.log(r.stdout)
+        return filter.isEmpty ? commits : commits.map { $0.filteringRefs(filter) }
     }
 
     public func commitDetail(_ commit: Commit) async throws -> CommitDetail {

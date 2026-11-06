@@ -209,6 +209,25 @@ struct CommandPalette: View {
                                            icon: "arrow.left.arrow.right", run: { m.compare(branch) }))
             }
         }
+        if m.graphFilter.isSolo {
+            list.append(PaletteCommand(id: "graph:exitSolo", title: "Exit Solo", icon: "scope", run: { m.exitSolo() }))
+        } else if !m.graphFilter.isEmpty {
+            list.append(PaletteCommand(id: "graph:showAll", title: "Show All Branches in Graph", icon: "eye",
+                                       run: { m.showAllBranches() }))
+        }
+        for branch in m.branches where branch.nameWithoutRemote != "HEAD" {
+            switch m.visibility(of: branch) {
+            case .shown where !branch.isCurrent:
+                list.append(PaletteCommand(id: "hide:" + branch.id, title: "Hide \(branch.name) in Graph",
+                                           icon: "eye.slash", run: { m.hide([branch]) }))
+            case .hidden:
+                list.append(PaletteCommand(id: "show:" + branch.id, title: "Show \(branch.name) in Graph",
+                                           icon: "eye", run: { m.show(branch) }))
+            default: break
+            }
+            list.append(PaletteCommand(id: "solo:" + branch.id, title: "Solo \(branch.name)", icon: "scope",
+                                       run: { m.solo([branch]) }))
+        }
         return list
     }
 }

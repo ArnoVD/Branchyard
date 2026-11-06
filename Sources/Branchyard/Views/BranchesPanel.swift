@@ -192,7 +192,7 @@ struct BranchesPanel: View {
                 if filtering && branches.isEmpty { continue }
                 let id = "f:remote:" + group.remote
                 out.append(SidebarNode(id: id, kind: .folder, title: group.remote, icon: "server.rack",
-                                       depth: 1, expanded: isOpen(id)))
+                                       depth: 1, expanded: isOpen(id), dimmed: model.isRemoteHidden(group.remote)))
                 if isOpen(id) {
                     let items = branches.map { (path: $0.nameWithoutRemote.split(separator: "/").map(String.init), branch: $0) }
                     Self.appendTree(items, idPrefix: "remote:" + group.remote, depth: 2, isOpen: isOpen, into: &out)
@@ -247,6 +247,15 @@ struct BranchesPanel: View {
         }
     }
 
+    private func toggleVisibility(_ branch: Branch) {
+        switch model.visibility(of: branch) {
+        case .shown: model.hide([branch])
+        case .hidden: model.show(branch)
+        case .soloed: model.unsolo([branch])
+        case .outsideSolo: model.solo([branch], adding: true)
+        }
+    }
+
     private func toggle(_ id: String) {
         guard filter.isEmpty else { return }
         if collapsed.contains(id) { collapsed.remove(id) } else { collapsed.insert(id) }
@@ -262,7 +271,8 @@ struct BranchesPanel: View {
                 .onTapGesture { toggle(node.id) }
                 .selectionDisabled()
         case .branch(let branch):
-            BranchRow(branch: branch, title: node.title, depth: node.depth)
+            BranchRow(branch: branch, title: node.title, depth: node.depth,
+                      visibility: model.visibility(of: branch)) { toggleVisibility(branch) }
                 .tag(node.id)
                 .listRowBackground(branch.isCurrent ? Color.green.opacity(0.2) : nil)
         case .stash(let stash):
@@ -290,6 +300,28 @@ struct BranchesPanel: View {
     private func tag(for id: String?) -> GitTag? {
         guard let id, id.hasPrefix("t:") else { return nil }
         return model.tags.first { $0.name == id.dropFirst(2) }
+    }
+
+    private func visibilityItems(_ branch: Branch) -> [RowMenuItem] {
+        var items: [RowMenuItem] = []
+        switch model.visibility(of: branch) {
+        case .shown:
+            if !branch.isCurrent { items.append(.action("Hide in Graph") { model.hide([branch]) }) }
+            items.append(.action("Solo") { model.solo([branch]) })
+        case .hidden:
+            items.append(.action("Show in Graph") { model.show(branch) })
+            items.append(.action("Solo") { model.solo([branch]) })
+        case .soloed:
+            items.append(.action("Remove from Solo") { model.unsolo([branch]) })
+            items.append(.action("Exit Solo") { model.exitSolo() })
+        case .outsideSolo:
+            items.append(.action("Add to Solo") { model.solo([branch], adding: true) })
+            items.append(.action("Exit Solo") { model.exitSolo() })
+        }
+        if !model.graphFilter.isEmpty && !model.graphFilter.isSolo {
+            items.append(.action("Show All Branches") { model.showAllBranches() })
+        }
+        return items
     }
 
     private func menuItems(for id: String) -> [RowMenuItem] {
@@ -324,12 +356,19 @@ struct BranchesPanel: View {
                 })
             }
             items.append(.divider)
+            items += visibilityItems(branch)
+            items.append(.divider)
             items.append(.action("Copy Name") { model.copyToPasteboard(branch.nameWithoutRemote, what: branch.nameWithoutRemote) })
             if !branch.isRemote && !branch.isCurrent {
                 items.append(.divider)
                 items.append(.action("Delete \(branch.name)…") { branchToDelete = branch })
             }
             return items
+        } else if id.hasPrefix("f:remote:"), !id.dropFirst("f:remote:".count).contains("/") {
+            let remote = String(id.dropFirst("f:remote:".count))
+            return model.isRemoteHidden(remote)
+                ? [.action("Show \(remote) Branches in Graph") { model.setRemote(remote, hidden: false) }]
+                : [.action("Hide \(remote) Branches in Graph") { model.setRemote(remote, hidden: true) }]
         } else if let stash = stash(for: id) {
             return [
                 .action("Pop") { model.pop(stash) },
@@ -378,6 +417,8 @@ private struct SidebarNode: Identifiable {
     let icon: String
     let depth: Int
     var expanded = false
+    /// Hidden from the graph.
+    var dimmed = false
 
     /// Leading space so a leaf's icon lines up under its folder's icon.
     var indent: CGFloat { 10 + CGFloat(max(depth - 1, 0)) * 14 }
@@ -436,7 +477,14 @@ private struct FolderRow: View {
                 .font(.system(size: 12.5))
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .opacity(node.dimmed ? 0.45 : 1)
             Spacer(minLength: 0)
+            if node.dimmed {
+                Image(systemName: "eye.slash")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .help("Hidden from the graph. Right-click to show.")
+            }
         }
         .padding(.leading, node.indent)
         .padding(.trailing, 8)
@@ -470,6 +518,11 @@ private struct BranchRow: View {
     let branch: Branch
     let title: String
     let depth: Int
+    let visibility: GraphVisibility
+    let toggleVisibility: () -> Void
+    @ViewState private var hovering = false
+
+    private var dimmed: Bool { visibility == .hidden || visibility == .outsideSolo }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -500,11 +553,48 @@ private struct BranchRow: View {
             if branch.ahead > 0 {
                 Text("↑\(branch.ahead)").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
             }
+            visibilityButton
         }
+        .opacity(dimmed ? 0.5 : 1)
         .padding(.leading, 10 + CGFloat(max(depth - 1, 0)) * 14 + 16)
         .padding(.trailing, 8)
         .frame(height: 24)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
         .help("\(branch.name) · \(branch.shortSHA) · \(branch.relativeDate)"
               + (branch.upstream.map { "\ntracks \($0)" } ?? ""))
+    }
+
+    private var helpText: String {
+        switch visibility {
+        case .hidden: return "Show in graph"
+        case .soloed: return "Remove from solo"
+        case .outsideSolo: return "Add to solo"
+        case .shown: return "Hide from graph"
+        }
+    }
+
+    /// Always visible while hidden or soloed; on hover otherwise. The current branch can't be hidden.
+    @ViewBuilder
+    private var visibilityButton: some View {
+        let icon: String? = switch visibility {
+        case .hidden: "eye.slash"
+        case .soloed: "scope"
+        case .outsideSolo: hovering ? "plus.circle" : nil
+        case .shown: hovering && !branch.isCurrent ? "eye" : nil
+        }
+        if let icon {
+            Button(action: toggleVisibility) {
+                Image(systemName: icon)
+                    .font(.system(size: 10))
+                    .foregroundStyle(visibility == .soloed ? Color.byAccent : Color.secondary)
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(helpText)
+        } else {
+            Color.clear.frame(width: 16, height: 16)
+        }
     }
 }

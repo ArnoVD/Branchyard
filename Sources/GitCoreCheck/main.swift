@@ -621,5 +621,23 @@ let cmpWCMB = try await fr.compare("side", nil, sinceMergeBase: true)
 check(!cmpWCMB.files.contains { $0.path == "other.txt" } && cmpWCMB.files.contains { $0.path == "new.txt" },
       "working copy since the merge base")
 
+// MARK: hidden and solo branches
+try await sh(fh, "branch", "weird", "side")
+try await sh(fh, "update-ref", "refs/remotes/up/feat/x", "side")
+func subjects(_ filter: GraphFilter) async throws -> [String] { try await fr.log(filter: filter).map(\.subject) }
+let sideCommit: (GraphFilter) async throws -> Commit? = { f in try await fr.log(filter: f).first { $0.subject == "side change" } }
+check(try await subjects(GraphFilter()).contains("side change"), "graph shows every branch by default")
+var hideFilter = GraphFilter(hiddenRefs: ["refs/heads/side", "refs/heads/weird"])
+check(try await sideCommit(hideFilter)?.refs.map(\.name) == ["up/feat/x"],
+      "hidden branches lose their label; a visible branch keeps the commit")
+hideFilter.hiddenRemotes = ["up"]
+let hiddenSubjects = try await subjects(hideFilter)
+check(!hiddenSubjects.contains("side change") && hiddenSubjects.count == 5, "hiding every branch on a commit hides the commit")
+let soloSide = try await fr.log(filter: GraphFilter(hiddenRefs: ["refs/heads/side"], soloRefs: ["refs/heads/side"]))
+check(soloSide.count == 6 && soloSide.first { $0.subject == "side change" }?.refs.map(\.name) == ["side"]
+      && soloSide.first { $0.subject == "add line zero" }?.refs.map(\.name) == ["main"],
+      "solo shows that branch and HEAD, with only their labels")
+check(try await subjects(GraphFilter(soloRefs: ["refs/heads/gone"])).count == 5, "solo on a deleted branch still shows HEAD")
+
 print(failures == 0 ? "\nAll checks passed." : "\n\(failures) check(s) failed.")
 exit(failures == 0 ? 0 : 1)

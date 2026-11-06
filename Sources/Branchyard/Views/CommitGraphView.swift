@@ -50,6 +50,10 @@ struct CommitGraphView: View {
                 CommitSearchBar(model: model)
                 Divider()
             }
+            if !model.graphFilter.isEmpty {
+                GraphFilterBar(model: model)
+                Divider()
+            }
             header
             Divider()
             if model.graph.isEmpty {
@@ -511,6 +515,12 @@ private struct RefLabels: View {
         return nil
     }
 
+    /// The local branch and the remote ones a label stands for.
+    private func branches(for label: RefLabel) -> [Branch] {
+        (label.local.flatMap { model.branch(named: $0, remote: false) }.map { [$0] } ?? [])
+            + label.remotes.compactMap { model.branch(named: $0, remote: true) }
+    }
+
     private func checkout(_ label: RefLabel) {
         if let branch = branch(for: label), !branch.isCurrent { model.checkout(branch) }
     }
@@ -530,7 +540,58 @@ private struct RefLabels: View {
             if !branch.isCurrent, let current = model.currentBranchName {
                 Button("Compare \(branch.name) with \(current)") { model.compare(branch) }
             }
+            Divider()
+            let all = branches(for: label)
+            if !all.contains(where: \.isCurrent) {
+                Button("Hide \(label.name)") { model.hide(all) }
+            }
+            if model.graphFilter.isSolo {
+                if all.allSatisfy({ model.graphFilter.soloRefs.contains($0.refName) }) {
+                    Button("Remove \(label.name) from Solo") { model.unsolo(all) }
+                } else {
+                    Button("Add \(label.name) to Solo") { model.solo(all, adding: true) }
+                }
+                Button("Exit Solo") { model.exitSolo() }
+            } else {
+                Button("Solo \(label.name)") { model.solo(all) }
+            }
+            Divider()
         }
         Button("Copy Name") { model.copyToPasteboard(label.name, what: label.name) }
+    }
+}
+
+/// Above the graph while branches are hidden or soloed.
+private struct GraphFilterBar: View {
+    @ObservedObject var model: RepoModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if model.graphFilter.isSolo {
+                Image(systemName: "scope").foregroundStyle(Color.byAccent)
+                Text("Solo: only \(model.soloSummary) and the branch you're on")
+                    .lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 8)
+                Button("Exit Solo") { model.exitSolo() }
+            } else {
+                Image(systemName: "eye.slash").foregroundStyle(.secondary)
+                Text(hiddenText).lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 8)
+                Button("Show All") { model.showAllBranches() }
+            }
+        }
+        .font(.system(size: 12))
+        .controlSize(.small)
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(Color.byAccent.opacity(0.08))
+    }
+
+    private var hiddenText: String {
+        let count = model.hiddenBranchCount
+        let remotes = model.graphFilter.hiddenRemotes.sorted()
+        var text = count == 1 ? "1 branch hidden" : "\(count) branches hidden"
+        if !remotes.isEmpty { text += " (all of \(ListFormatter.localizedString(byJoining: remotes)))" }
+        return text + " from the graph"
     }
 }

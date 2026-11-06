@@ -1,4 +1,5 @@
 import AppKit
+import GitCore
 
 /// Test hooks driven by environment variables, for checks without touching the real mouse:
 /// - `BRANCHYARD_OPEN=<repo path>` opens that repository in a tab.
@@ -12,6 +13,8 @@ import AppKit
 /// - `BRANCHYARD_FILE=<path>[:blame]` opens File History (or Blame) of that file after 1.5 s.
 /// - `BRANCHYARD_COMPARE=<base>..<target>[:commits]` compares two revisions after 1.5 s; `...`
 ///   compares since the common ancestor, an empty target is the working copy.
+/// - `BRANCHYARD_GRAPH=hide:<ref>,remote:<name>,solo:<ref>` sets the graph's branch filter after
+///   1.5 s (saved for that repository); empty shows every branch again.
 /// - `BRANCHYARD_RIGHTCLICK=<x>,<y>` (window points, from the top left) sends a right-click there
 ///   after 4 s, logs any menu that opens with its screen frame, then quits.
 enum DebugHooks {
@@ -70,6 +73,20 @@ enum DebugHooks {
                 tab.compare(CompareSide(rev: parts[0], title: parts[0]), target, sinceMergeBase: since)
                 if commits { tab.setCompareTab(.commits) }
             }
+        }
+        if let spec = env["BRANCHYARD_GRAPH"] {
+            var filter = GraphFilter()
+            for item in spec.split(separator: ",") {
+                let parts = item.split(separator: ":", maxSplits: 1).map(String.init)
+                guard parts.count == 2 else { continue }
+                switch parts[0] {
+                case "hide": filter.hiddenRefs.insert(parts[1])
+                case "remote": filter.hiddenRemotes.insert(parts[1])
+                case "solo": filter.soloRefs.insert(parts[1])
+                default: break
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { state.selectedTab?.setGraphFilter(filter) }
         }
         if let message = env["BRANCHYARD_COMMIT"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
