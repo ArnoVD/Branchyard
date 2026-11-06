@@ -45,7 +45,7 @@ The Pull button's dropdown switches the mode too.
 
 - **Hunks and lines:** in a file's diff (Hunk or Inline View), use Stage Hunk / Discard Hunk /
   Unstage Hunk on each `@@` row, or click line numbers to pick lines (Shift-click for a range)
-  and use Stage Lines / Discard Lines. Discards can be undone with ⌘Z.
+  and use Stage Lines / Discard Lines. Discards can be undone with Undo.
 - **Amend:** Commit options → "Amend previous commit" rewrites the last commit with the
   staged files and the edited message.
 - **Force push:** when the remote has commits you don't have, Push offers Force Push
@@ -53,6 +53,13 @@ The Pull button's dropdown switches the mode too.
 - **Tags:** right-click a commit → Create Tag Here…; right-click a tag to push or delete it.
 - **Branches:** right-click a branch to push it, rename it or set its upstream.
 - **Ignore:** right-click a file → Ignore, for that file, its extension or its folder.
+- **Cherry-pick, revert, reset:** right-click a commit in the graph. Reset offers Soft, Mixed
+  and Hard; all three can be undone with Undo.
+- **Search commits (⌘F):** type words from the message, an author or a SHA. Matches light up
+  in the graph; ↩ / ⇧↩ jump between them.
+- **Command palette (⌘P):** run any action or check out / merge a branch by typing its name.
+- **Pull Request:** opens the "new pull request" page on GitHub or Bitbucket for the current
+  branch, pushing it first when needed.
 
 ## Shortcuts
 
@@ -62,6 +69,7 @@ The Pull button's dropdown switches the mode too.
 | Clone | ⇧⌘N |
 | Refresh / Fetch / Pull / Push | ⌘R / ⇧⌘F / ⇧⌘P / ⇧⌘U |
 | Commit | ⌘↩ (in the message box) |
+| Search commits / Command palette | ⌘F / ⌘P |
 | Switch tab | ⌘1 … ⌘9 |
 | Close tab | ⇧⌘W |
 

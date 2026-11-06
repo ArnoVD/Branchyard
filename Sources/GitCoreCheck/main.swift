@@ -445,5 +445,115 @@ gs = try await hr.status()
 check(try await out(hr, "show", ":g.txt") == "a\nB\nc" && !gs.unstaged.contains { $0.path == "g.txt" },
       "stage every line of a file without a final newline")
 
+// MARK: cherry-pick, revert, reset
+let ca = root.appendingPathComponent("commitactions")
+try FileManager.default.createDirectory(at: ca, withIntermediateDirectories: true)
+try await sh(ca, "init", "-b", "main")
+try await sh(ca, "config", "user.name", "Check")
+try await sh(ca, "config", "user.email", "check@example.com")
+try await sh(ca, "config", "commit.gpgsign", "false")
+let cr = Repository(url: ca)
+try write(ca, "a.txt", "one\n")
+try await cr.stage(["a.txt"]); try await cr.commit(message: "base")
+let caBase = await cr.headSHA()!
+try await sh(ca, "switch", "-q", "-c", "side")
+try write(ca, "b.txt", "side\n")
+try await cr.stage(["b.txt"]); try await cr.commit(message: "side work")
+let sideSHA = await cr.headSHA()!
+try await sh(ca, "switch", "-q", "main")
+
+var r = try await cr.cherryPick(sideSHA)
+check(r.succeeded && FileManager.default.fileExists(atPath: ca.appendingPathComponent("b.txt").path),
+      "cherry-pick brings the commit's change")
+let pickedSubject = try await out(cr, "log", "-1", "--format=%s")
+check(pickedSubject == "side work", "cherry-pick keeps the message")
+let picked = await cr.headSHA()!
+
+// Undo of a cherry-pick: reset --keep back.
+try await cr.reset(to: caBase, mode: .keep)
+let undoneHead = await cr.headSHA()
+check(undoneHead == caBase && !FileManager.default.fileExists(atPath: ca.appendingPathComponent("b.txt").path),
+      "reset --keep undoes the cherry-pick")
+try await cr.reset(to: picked, mode: .keep)
+
+r = try await cr.revertCommit(picked)
+check(r.succeeded && !FileManager.default.fileExists(atPath: ca.appendingPathComponent("b.txt").path),
+      "revert adds a commit that undoes it")
+let revertSubject = try await out(cr, "log", "-1", "--format=%s")
+check(revertSubject.hasPrefix("Revert"), "revert commit message")
+
+// Conflicting cherry-pick: state is .cherryPicking, abort cleans up.
+try write(ca, "a.txt", "main\n")
+try await cr.stage(["a.txt"]); try await cr.commit(message: "main edit")
+try await sh(ca, "switch", "-q", "side")
+try write(ca, "a.txt", "side\n")
+try await cr.stage(["a.txt"]); try await cr.commit(message: "side edit")
+let sideEdit = await cr.headSHA()!
+try await sh(ca, "switch", "-q", "main")
+r = try await cr.cherryPick(sideEdit)
+var cs = try await cr.status()
+check(!r.succeeded && cs.conflicted.count == 1, "conflicting cherry-pick reports a conflict")
+check(await cr.operationState() == .cherryPicking, "operation state: cherry-picking")
+try await cr.abort(.cherryPicking)
+let afterAbort = await cr.operationState()
+let cleanAfterAbort = try await cr.status().isClean
+check(afterAbort == OperationState.none && cleanAfterAbort, "abort the cherry-pick")
+
+// Conflicting revert: state is .reverting.
+r = try await cr.revertCommit(await cr.sha(of: "HEAD")!)
+check(r.succeeded, "revert of HEAD applies cleanly")
+try write(ca, "a.txt", "again\n")
+try await cr.stage(["a.txt"]); try await cr.commit(message: "again")
+r = try await cr.revertCommit(await cr.sha(of: "HEAD~2")!)
+let revState = await cr.operationState()
+check(!r.succeeded && revState == .reverting, "conflicting revert: state reverting")
+try await cr.abort(.reverting)
+check(await cr.operationState() == OperationState.none, "abort the revert")
+
+// Reset modes.
+let top = await cr.headSHA()!
+let parent = await cr.sha(of: "HEAD~1")!
+try await cr.reset(to: parent, mode: .soft)
+cs = try await cr.status()
+let softHead = await cr.headSHA()
+check(softHead == parent && cs.staged.contains { $0.path == "a.txt" }, "reset soft keeps changes staged")
+try await cr.reset(to: top, mode: .soft)
+try await cr.reset(to: parent, mode: .mixed)
+cs = try await cr.status()
+check(cs.staged.isEmpty && cs.unstaged.contains { $0.path == "a.txt" }, "reset mixed keeps changes unstaged")
+try await cr.reset(to: top, mode: .mixed)
+
+// Hard reset with saved changes, then undo brings both back.
+try write(ca, "a.txt", "dirty\n")
+let saved = try await cr.saveWorkingState()
+check(saved != nil, "save dirty working state")
+let stillDirty = try await cr.status().unstaged.count
+check(stillDirty == 1, "saving leaves the tree alone")
+try await cr.reset(to: parent, mode: .hard)
+let hardClean = try await cr.status().isClean
+let hardHead = await cr.headSHA()
+check(hardClean && hardHead == parent, "reset hard: clean tree at the target")
+try await cr.reset(to: top, mode: .hard)
+try await cr.restoreWorkingState(saved!)
+check(try String(contentsOf: ca.appendingPathComponent("a.txt"), encoding: .utf8) == "dirty\n", "undo hard reset restores changes")
+try await sh(ca, "reset", "-q", "--hard")
+let cleanSave = try await cr.saveWorkingState()
+check(cleanSave == nil, "nothing to save on a clean tree")
+
+// Pull request links.
+let prCases: [(String, String, String?)] = [
+    ("git@github.com:owner/repo.git", "feature/x", "https://github.com/owner/repo/compare/feature/x?expand=1"),
+    ("https://github.com/owner/repo", "main", "https://github.com/owner/repo/compare/main?expand=1"),
+    ("ssh://git@github.com:22/owner/repo.git", "fix", "https://github.com/owner/repo/compare/fix?expand=1"),
+    ("git@github.com-work:owner/repo.git", "fix", "https://github.com/owner/repo/compare/fix?expand=1"),
+    ("git@bitbucket.org:team/app.git", "feature/a", "https://bitbucket.org/team/app/pull-requests/new?source=feature/a&t=1"),
+    ("https://someone@bitbucket.org/team/app.git", "b", "https://bitbucket.org/team/app/pull-requests/new?source=b&t=1"),
+    ("ssh://git@git.example.com:7999/proj/app.git", "b", nil),
+    ("/local/path/repo.git", "b", nil),
+]
+for (remote, branch, want) in prCases {
+    check(PullRequestLink.url(remote: remote, branch: branch)?.absoluteString == want, "PR link for \(remote)")
+}
+
 print(failures == 0 ? "\nAll checks passed." : "\n\(failures) check(s) failed.")
 exit(failures == 0 ? 0 : 1)

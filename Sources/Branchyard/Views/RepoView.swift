@@ -103,6 +103,19 @@ struct RepoView: View {
             Text("Pushing to \(offer.target) was rejected. Force push replaces the remote branch with yours: "
                  + "commits only on the remote are lost there. Pull first to keep them.")
         }
+        .confirmationDialog("Reset \(model.currentBranchName ?? "HEAD") to \(model.hardResetRequest?.shortSHA ?? "")?",
+                            isPresented: Binding(get: { model.hardResetRequest != nil },
+                                                 set: { if !$0 { model.hardResetRequest = nil } }),
+                            presenting: model.hardResetRequest) { commit in
+            Button("Reset Hard", role: .destructive) { model.reset(to: commit, mode: .hard) }
+            Button("Cancel", role: .cancel) {}
+        } message: { commit in
+            Text("Moves the branch to “\(commit.subject)” and throws away all changes to tracked files. "
+                 + "Untracked files stay. Undo brings the branch and the changes back.")
+        }
+        .sheet(isPresented: $model.showPalette) {
+            CommandPalette(model: model)
+        }
         .alert("Git", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
@@ -246,6 +259,11 @@ private struct ActionBar: View {
                     .disabled(model.status.isClean && model.busyAction != .stash)
                 tool("Pop", "tray.and.arrow.up", .pop, badge: model.stashes.count) { model.pop() }
                     .disabled(model.stashes.isEmpty && model.busyAction != .pop)
+                ToolButton("Pull Request", "arrow.triangle.pull",
+                           help: "Open a pull request for \(model.status.branch ?? "this branch") on GitHub or Bitbucket") {
+                    model.createPullRequest()
+                }
+                .disabled(model.busy != nil || model.status.branch == nil || model.remotes.isEmpty)
                 Rectangle().fill(Color.byHairline).frame(width: 1, height: 30).padding(.horizontal, 8)
                 ToolButton("Terminal", "apple.terminal") { model.openInTerminal() }
             }
@@ -263,6 +281,11 @@ private struct ActionBar: View {
                     Button("Fetch All") { model.fetch() }
                     Divider()
                     Button("Publish to GitHub…") { model.showPublish = true }
+                    Button("Create Pull Request") { model.createPullRequest() }
+                        .disabled(model.status.branch == nil || model.remotes.isEmpty)
+                    Divider()
+                    Button("Search Commits") { model.openSearch() }
+                    Button("Command Palette…") { model.showPalette = true }
                     Divider()
                     Button("Reveal in Finder") { model.revealInFinder() }
                     Button("Open in Terminal") { model.openInTerminal() }

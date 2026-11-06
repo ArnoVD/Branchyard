@@ -80,7 +80,9 @@ final class RepoModel: ObservableObject, Identifiable {
     @Published var detailError: String?
 
     // History graph (middle pane) and the commit picked in it (right pane).
-    @Published var graph: [GraphRow] = []
+    @Published var graph: [GraphRow] = [] {
+        didSet { if !commitSearch.isEmpty { updateSearchMatches(jump: false) } }
+    }
     @Published var graphLanes = 1
     @Published var selectedCommitSHA: String?
     @Published var commitDetail: CommitDetail?
@@ -114,6 +116,18 @@ final class RepoModel: ObservableObject, Identifiable {
     @Published var newTagRequest: NewTagRequest?
     @Published var branchRequest: BranchRequest?
     @Published var forcePushOffer: ForcePushOffer?
+    /// "Reset to This Commit → Hard", waiting for confirmation.
+    @Published var hardResetRequest: Commit?
+    /// The command palette (⌘P).
+    @Published var showPalette = false
+    /// Commit search over the graph (⌘F).
+    @Published var searchOpen = false
+    @Published var commitSearch = "" { didSet { if commitSearch != oldValue { updateSearchMatches(jump: true) } } }
+    /// Commits matching `commitSearch`, top to bottom.
+    @Published private(set) var searchMatches: [String] = []
+    @Published private(set) var searchMatchSet: Set<String> = []
+    /// Bumped to put the cursor in the search field.
+    @Published var searchFocusRequest = 0
     @Published var remotes: [String] = []
     /// "Amend previous commit": the next commit replaces HEAD instead of adding one.
     @Published var amend = false {
@@ -481,6 +495,12 @@ final class RepoModel: ObservableObject, Identifiable {
             }
         case .discardLines(_, let patch):
             try await repo.applyPatch(patch)
+        case .reset(_, let before, let after, let mode, let saved):
+            guard await repo.headSHA() == after else {
+                throw GitError(command: "undo", output: "Can't undo: the branch has moved since.")
+            }
+            try await repo.reset(to: before, mode: mode)
+            if let saved { try await repo.restoreWorkingState(saved) }
         }
     }
 
@@ -503,6 +523,11 @@ final class RepoModel: ObservableObject, Identifiable {
             for file in files { try await repo.discard(file.change) }
         case .discardLines(_, let patch):
             try await repo.applyPatch(patch, reverse: true)
+        case .reset(_, let before, let after, let mode, _):
+            guard await repo.headSHA() == before else {
+                throw GitError(command: "redo", output: "Can't redo: the branch has moved since.")
+            }
+            try await repo.reset(to: after, mode: mode)
         }
     }
 
@@ -527,11 +552,14 @@ final class RepoModel: ObservableObject, Identifiable {
         guard !result.succeeded else { return }
         let s = try await repo.status()
         if !s.conflicted.isEmpty {
-            let next = await repo.operationState() == .rebasing ? "click Continue" : "commit"
+            let next = [.rebasing, .cherryPicking, .reverting].contains(await repo.operationState()) ? "click Continue" : "commit"
             notice = "\(what) produced \(s.conflicted.count) conflict(s). Resolve them, then \(next)."
             selectedCommitSHA = nil
             selectedChangeID = s.conflicted.first?.id
         } else {
+            // e.g. a cherry-pick that turned out empty: don't leave it half done.
+            let state = await repo.operationState()
+            if state == .cherryPicking || state == .reverting { try? await repo.abort(state) }
             throw GitError(command: what, output: result.combinedOutput)
         }
     }
@@ -977,6 +1005,151 @@ final class RepoModel: ObservableObject, Identifiable {
         }
     }
 
+    // MARK: commit actions (graph menu)
+
+    func cherryPick(_ commit: Commit) {
+        let short = commit.shortSHA, target = status.branch ?? "HEAD"
+        runUndoable("Cherry-picking \(short)…") {
+            self.toastTitle = "Cherry-picked"
+            self.toastDetail = "\(short) onto \(target)"
+            let before = await self.repo.headSHA()
+            let result = try await self.repo.cherryPick(commit.sha, mainline: commit.isMerge ? 1 : nil)
+            try await self.handleMayConflict(result, what: "Cherry-pick")
+            return await self.headMove("cherry-pick \(short)", from: before, ok: result.succeeded)
+        }
+    }
+
+    func revertCommit(_ commit: Commit) {
+        let short = commit.shortSHA
+        runUndoable("Reverting \(short)…") {
+            self.toastTitle = "Commit Reverted"
+            self.toastDetail = "Added a commit that undoes \(short)"
+            let before = await self.repo.headSHA()
+            let result = try await self.repo.revertCommit(commit.sha, mainline: commit.isMerge ? 1 : nil)
+            try await self.handleMayConflict(result, what: "Revert")
+            return await self.headMove("revert \(short)", from: before, ok: result.succeeded)
+        }
+    }
+
+    /// Undo for a cherry-pick / revert that made a commit; after a conflict there is none.
+    private func headMove(_ title: String, from before: String?, ok: Bool) async -> UndoStep? {
+        guard ok, let before, let after = await repo.headSHA(), after != before else {
+            forgetUndo()
+            return nil
+        }
+        return .reset(title: title, before: before, after: after, mode: .keep, saved: nil)
+    }
+
+    /// Moves the current branch to `commit`. Hard throws away changes to tracked files,
+    /// but saves them first so Undo brings them back.
+    func reset(to commit: Commit, mode: Repository.ResetMode) {
+        let short = commit.shortSHA, target = status.branch ?? "HEAD"
+        runUndoable("Resetting \(target)…") {
+            self.toastTitle = "Reset \(target)"
+            self.toastDetail = "to \(short) (\(mode.rawValue))"
+            guard let before = await self.repo.headSHA() else { return nil }
+            let saved = mode == .hard ? try await self.repo.saveWorkingState() : nil
+            try await self.repo.reset(to: commit.sha, mode: mode)
+            return .reset(title: "reset \(target) to \(short)", before: before, after: commit.sha, mode: mode, saved: saved)
+        }
+    }
+
+    // MARK: commit search
+
+    func openSearch() {
+        closeDiff()
+        searchOpen = true
+        searchFocusRequest += 1
+    }
+
+    func closeSearch() {
+        searchOpen = false
+        commitSearch = ""
+    }
+
+    /// Every word must appear in the subject, author, email or SHA.
+    private func updateSearchMatches(jump: Bool) {
+        let words = commitSearch.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !words.isEmpty else {
+            searchMatches = []
+            searchMatchSet = []
+            return
+        }
+        searchMatches = graph.compactMap { row -> String? in
+            let c = row.commit
+            guard !c.isWIP else { return nil }
+            let haystack = "\(c.subject)\n\(c.author)\n\(c.email)".lowercased()
+            let hit = words.allSatisfy { word in haystack.contains(word) || c.sha.hasPrefix(word) }
+            return hit ? c.sha : nil
+        }
+        searchMatchSet = Set(searchMatches)
+        if jump, let first = searchMatches.first, !searchMatchSet.contains(selectedCommitSHA ?? "") {
+            selectCommit(first, scroll: true)
+        }
+    }
+
+    /// Position of the selected commit among the matches (0-based), if it is one.
+    var searchIndex: Int? {
+        selectedCommitSHA.flatMap { searchMatches.firstIndex(of: $0) }
+    }
+
+    /// Selects the next (+1) or previous (-1) match, wrapping around.
+    func stepSearch(_ delta: Int) {
+        guard !searchMatches.isEmpty else { return }
+        let next: Int
+        if let i = searchIndex {
+            next = (i + delta + searchMatches.count) % searchMatches.count
+        } else {
+            let selected = graph.firstIndex { $0.commit.sha == selectedCommitSHA } ?? -1
+            let after = searchMatches.firstIndex { sha in (graph.firstIndex { $0.commit.sha == sha } ?? 0) > selected }
+            next = delta > 0 ? (after ?? 0) : ((after ?? searchMatches.count) - 1 + searchMatches.count) % searchMatches.count
+        }
+        selectCommit(searchMatches[next], scroll: true)
+    }
+
+    // MARK: pull requests
+
+    /// Opens the hosting site's "new pull request" page for the current branch, pushing it
+    /// first when the remote doesn't have it (or all of it) yet.
+    func createPullRequest() {
+        guard let branch = status.branch else {
+            errorMessage = "Check out a branch to open a pull request for it."
+            return
+        }
+        let snapshot = status
+        Task {
+            let upstream = snapshot.upstream
+            let remote: String
+            if let upstream, let slash = upstream.firstIndex(of: "/") {
+                remote = String(upstream[..<slash])
+            } else if let fallback = try? await repo.defaultRemote() {
+                remote = fallback
+            } else {
+                errorMessage = "This repository has no remotes. Publish it first."
+                return
+            }
+            let remoteBranch = upstream.flatMap { u in u.firstIndex(of: "/").map { String(u[u.index(after: $0)...]) } } ?? branch
+            guard let raw = await repo.remoteURL(remote),
+                  let url = PullRequestLink.url(remote: raw, branch: remoteBranch) else {
+                errorMessage = "Pull requests can be opened for GitHub and Bitbucket Cloud remotes. \(remote) points somewhere else."
+                return
+            }
+            let open = { [weak self] in
+                NSWorkspace.shared.open(url)
+                self?.showToast(Toast(title: "Opened Pull Request Page", detail: remoteBranch, kind: .info, link: nil))
+            }
+            if upstream == nil || unpushed > 0 {
+                run("Pushing \(branch)…", on: .push, then: open) {
+                    self.toastTitle = "Pushed \(branch)"
+                    self.toastDetail = "Opening the pull request page…"
+                    try await self.repo.push(currentStatus: snapshot)
+                }
+            } else {
+                open()
+            }
+        }
+    }
+
     // MARK: Finder / Terminal
 
     func revealInFinder(_ path: String? = nil) {
@@ -1003,6 +1176,7 @@ private extension OperationState {
         case .merging: "Merge"
         case .rebasing: "Rebase"
         case .cherryPicking: "Cherry-pick"
+        case .reverting: "Revert"
         }
     }
 }
@@ -1052,7 +1226,8 @@ struct Activity: Equatable {
             ("Aborting", "Aborted"), ("Continuing", "Continued"), ("Marking", "Marked"),
             ("Resolving", "Resolved"), ("Saving", "Saved"), ("Discarding", "Discarded"),
             ("Undoing", "Undid"), ("Redoing", "Redid"), ("Amending", "Amended"), ("Renaming", "Renamed"),
-            ("Setting", "Set"), ("Updating", "Updated"),
+            ("Setting", "Set"), ("Updating", "Updated"), ("Cherry-picking", "Cherry-picked"),
+            ("Reverting", "Reverted"), ("Resetting", "Reset"), ("Opening", "Opened"),
         ]
         for (ing, ed) in past where verb.hasPrefix(ing) { return ed + verb.dropFirst(ing.count) }
         return "\(verb) done"
@@ -1068,6 +1243,9 @@ enum UndoStep {
     case discard([DiscardedFile])
     /// Some lines of one file; `patch` puts them back.
     case discardLines(path: String, patch: String)
+    /// HEAD moved from `before` to `after` (reset, cherry-pick, revert). Undo resets back with
+    /// `mode`; `saved` holds changes a hard reset threw away (`git stash create`).
+    case reset(title: String, before: String, after: String, mode: Repository.ResetMode, saved: String?)
 
     var title: String {
         switch self {
@@ -1081,6 +1259,8 @@ enum UndoStep {
             return files.count == 1 ? "discard \(files[0].change.fileName)" : "discard \(files.count) files"
         case .discardLines(let path, _):
             return "discard lines in \((path as NSString).lastPathComponent)"
+        case .reset(let title, _, _, _, _):
+            return title
         }
     }
 }

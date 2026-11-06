@@ -309,6 +309,9 @@ struct BranchesPanel: View {
                 if !model.remotes.isEmpty {
                     let target = branch.upstreamGone ? nil : branch.upstream
                     items.append(.action("Push \(branch.name)\(target.map { " to \($0)" } ?? "")") { model.pushBranch(branch) })
+                    if branch.isCurrent {
+                        items.append(.action("Create Pull Request") { model.createPullRequest() })
+                    }
                 }
                 items.append(.action("Rename \(branch.name)…") {
                     model.branchRequest = BranchRequest(kind: .rename, branch: branch)

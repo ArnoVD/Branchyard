@@ -23,6 +23,7 @@ enum LaneColors {
 struct CommitGraphView: View {
     @ObservedObject var model: RepoModel
     @FocusState private var focused: Bool
+    @ViewState private var width: CGFloat = 1200
 
     static let rowHeight: CGFloat = 28
     static let laneWidth: CGFloat = 16
@@ -32,8 +33,23 @@ struct CommitGraphView: View {
         CGFloat(min(model.graphLanes, 10)) * Self.laneWidth + 12
     }
 
+    /// Author, date and SHA drop out (SHA first) when the pane gets too narrow,
+    /// so the commit message keeps at least 180 points.
+    private var columns: GraphColumns {
+        var room = width - Self.labelWidth - 10 - graphWidth - 18 - 180
+        var c = GraphColumns(author: false, date: false, sha: false)
+        if room >= 112 { c.date = true; room -= 112 }
+        if room >= 104 { c.author = true; room -= 104 }
+        if room >= 44 { c.sha = true }
+        return c
+    }
+
     var body: some View {
         VStack(spacing: 0) {
+            if model.searchOpen {
+                CommitSearchBar(model: model)
+                Divider()
+            }
             header
             Divider()
             if model.graph.isEmpty {
@@ -44,8 +60,9 @@ struct CommitGraphView: View {
                     ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(model.graph) { row in
-                                CommitRowView(model: model, row: row, graphWidth: graphWidth,
-                                              isSelected: row.commit.sha == model.selectedCommitSHA)
+                                CommitRowView(model: model, row: row, graphWidth: graphWidth, columns: columns,
+                                              isSelected: row.commit.sha == model.selectedCommitSHA,
+                                              match: matchState(row.commit))
                                     .id(row.commit.sha)
                             }
                         }
@@ -64,6 +81,16 @@ struct CommitGraphView: View {
                 .onTapGesture { focused = true }
             }
         }
+        .background(GeometryReader { geo in
+            Color.clear
+                .onAppear { width = geo.size.width }
+                .onChange(of: geo.size.width) { width = geo.size.width }
+        })
+    }
+
+    /// nil: no search running. Otherwise whether this commit matches it.
+    private func matchState(_ commit: Commit) -> Bool? {
+        model.commitSearch.isEmpty ? nil : model.searchMatchSet.contains(commit.sha)
     }
 
     private var header: some View {
@@ -71,9 +98,18 @@ struct CommitGraphView: View {
             Text("BRANCH / TAG").frame(width: Self.labelWidth, alignment: .leading).padding(.leading, 10)
             Text("GRAPH").frame(width: graphWidth, alignment: .leading)
             Text("COMMIT MESSAGE").frame(maxWidth: .infinity, alignment: .leading)
-            Text("AUTHOR").frame(width: 104, alignment: .leading)
-            Text("DATE").frame(width: 112, alignment: .leading)
-            Text("SHA").frame(width: 62, alignment: .leading)
+            if columns.author { Text("AUTHOR").frame(width: 104, alignment: .leading) }
+            if columns.date { Text("DATE").frame(width: 112, alignment: .leading) }
+            if columns.sha { Text("SHA").frame(width: 44, alignment: .leading) }
+            Button { model.searchOpen ? model.closeSearch() : model.openSearch() } label: {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(model.searchOpen ? Color.accentColor : .secondary)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Search commits (⌘F)")
         }
         .font(.system(size: 10, weight: .semibold))
         .foregroundStyle(.secondary)
@@ -82,13 +118,23 @@ struct CommitGraphView: View {
     }
 }
 
+/// Which optional columns fit in the graph pane.
+private struct GraphColumns: Equatable {
+    var author: Bool
+    var date: Bool
+    var sha: Bool
+}
+
 // MARK: - Row
 
 private struct CommitRowView: View {
     @ObservedObject var model: RepoModel
     let row: GraphRow
     let graphWidth: CGFloat
+    let columns: GraphColumns
     let isSelected: Bool
+    /// nil: no search running; true/false: whether this commit matches it.
+    let match: Bool?
     @ViewState private var hovering = false
 
     private var commit: Commit { row.commit }
@@ -107,22 +153,31 @@ private struct CommitRowView: View {
             message
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, 8)
-            Text(commit.author)
-                .frame(width: 104, alignment: .leading)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(commit.isWIP ? "" : Self.relative(commit.date))
-                .frame(width: 112, alignment: .leading)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .help(commit.isWIP ? "" : commit.date.formatted(date: .abbreviated, time: .shortened))
-            Text(commit.isWIP ? "" : commit.shortSHA)
-                .font(.system(size: 11, design: .monospaced))
-                .frame(width: 62, alignment: .leading)
-                .foregroundStyle(.tertiary)
+            if columns.author {
+                Text(commit.author)
+                    .frame(width: 104, alignment: .leading)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            if columns.date {
+                Text(commit.isWIP ? "" : Self.relative(commit.date))
+                    .frame(width: 112, alignment: .leading)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(commit.isWIP ? "" : commit.date.formatted(date: .abbreviated, time: .shortened))
+            }
+            if columns.sha {
+                Text(commit.isWIP ? "" : commit.shortSHA)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(width: 62, alignment: .leading)
+                    .foregroundStyle(.tertiary)
+            } else {
+                Color.clear.frame(width: 18)
+            }
         }
         .font(.system(size: 12))
         .frame(height: CommitGraphView.rowHeight)
+        .opacity(match == false && !isSelected ? 0.35 : 1)
         .background(background)
         .contentShape(Rectangle())
         .onTapGesture { model.selectCommit(commit.sha) }
@@ -167,6 +222,8 @@ private struct CommitRowView: View {
         ZStack(alignment: .leading) {
             if isSelected {
                 laneColor.opacity(0.22)
+            } else if match == true {
+                Color.yellow.opacity(0.16)
             } else if hovering {
                 Color.secondary.opacity(0.08)
             }
@@ -178,6 +235,19 @@ private struct CommitRowView: View {
         if !commit.isWIP {
             Button("Create Branch Here…") { model.newBranchRequest = NewBranchRequest(startPoint: commit.sha) }
             Button("Create Tag Here…") { model.newTagRequest = NewTagRequest(sha: commit.sha, subject: commit.subject) }
+            Divider()
+            Group {
+                if !isHead {
+                    Button("Cherry-pick Commit") { model.cherryPick(commit) }
+                }
+                Button("Revert Commit") { model.revertCommit(commit) }
+                Menu("Reset \(model.currentBranchName ?? "HEAD") to This Commit") {
+                    Button("Soft – keep all changes, staged") { model.reset(to: commit, mode: .soft) }
+                    Button("Mixed – keep working copy, reset index") { model.reset(to: commit, mode: .mixed) }
+                    Button("Hard – discard all changes…") { model.hardResetRequest = commit }
+                }
+            }
+            .disabled(model.busy != nil || model.opState != .none)
             Divider()
             Button("Copy Commit SHA") { model.copyToPasteboard(commit.sha, what: "Commit SHA \(commit.sha.prefix(7))") }
             Button("Copy Commit Message") { model.copyToPasteboard(commit.subject, what: "Commit message") }
@@ -192,6 +262,56 @@ private struct CommitRowView: View {
 
     static func relative(_ date: Date) -> String {
         formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+// MARK: - Search
+
+/// "Search commits" field above the graph: matches light up, the rest fade.
+private struct CommitSearchBar: View {
+    @ObservedObject var model: RepoModel
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Search commits by message, author or SHA", text: $model.commitSearch)
+                .textFieldStyle(.plain)
+                .focused($focused)
+                .layoutPriority(-1)
+                .onSubmit { model.stepSearch(NSEvent.modifierFlags.contains(.shift) ? -1 : 1); focused = true }
+                .onKeyPress(.escape) { model.closeSearch(); return .handled }
+                .onKeyPress(.downArrow) { model.stepSearch(1); return .handled }
+                .onKeyPress(.upArrow) { model.stepSearch(-1); return .handled }
+            if !model.commitSearch.isEmpty {
+                Text(countText)
+                    .font(.system(size: 11).monospacedDigit())
+                    .fixedSize()
+                    .foregroundStyle(model.searchMatches.isEmpty ? Color.orange : .secondary)
+                Button { model.stepSearch(-1) } label: { Image(systemName: "chevron.up") }
+                    .help("Previous match (⇧↩)")
+                    .disabled(model.searchMatches.isEmpty)
+                Button { model.stepSearch(1) } label: { Image(systemName: "chevron.down") }
+                    .help("Next match (↩)")
+                    .disabled(model.searchMatches.isEmpty)
+            }
+            Button { model.closeSearch() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                .help("Close search (Esc)")
+        }
+        .buttonStyle(.borderless)
+        .font(.system(size: 12))
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(Color.byPanel)
+        .onAppear { focused = true }
+        .onChange(of: model.searchFocusRequest) { focused = true }
+    }
+
+    private var countText: String {
+        let n = model.searchMatches.count
+        guard n > 0 else { return "No matches" }
+        if let i = model.searchIndex { return "\(i + 1) of \(n)" }
+        return "\(n) match\(n == 1 ? "" : "es")"
     }
 }
 

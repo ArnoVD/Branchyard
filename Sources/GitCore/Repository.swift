@@ -110,17 +110,18 @@ public struct Repository: Sendable, Hashable {
     }
 
     public func operationState() async -> OperationState {
-        let names = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD"]
+        let names = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD"]
         guard let r = try? await git.run(["rev-parse"] + names.flatMap { ["--git-path", $0] }) else { return .none }
         let paths = r.stdout.split(separator: "\n").map { path -> String in
             let p = String(path)
             return p.hasPrefix("/") ? p : url.appendingPathComponent(p).path
         }
         let exists = paths.map { FileManager.default.fileExists(atPath: $0) }
-        guard exists.count == 4 else { return .none }
+        guard exists.count == 5 else { return .none }
         if exists[1] || exists[2] { return .rebasing }
         if exists[0] { return .merging }
         if exists[3] { return .cherryPicking }
+        if exists[4] { return .reverting }
         return .none
     }
 
@@ -394,6 +395,7 @@ public struct Repository: Sendable, Hashable {
         case .merging: try await git.run(["merge", "--abort"])
         case .rebasing: try await git.run(["rebase", "--abort"])
         case .cherryPicking: try await git.run(["cherry-pick", "--abort"])
+        case .reverting: try await git.run(["revert", "--abort"])
         case .none: break
         }
     }
@@ -404,6 +406,7 @@ public struct Repository: Sendable, Hashable {
         switch state {
         case .rebasing: try await git.run(["rebase", "--continue"], environment: noEditor)
         case .cherryPicking: try await git.run(["cherry-pick", "--continue"], environment: noEditor)
+        case .reverting: try await git.run(["revert", "--continue"], environment: noEditor)
         case .merging: try await git.run(["commit", "--no-edit"])
         case .none: break
         }

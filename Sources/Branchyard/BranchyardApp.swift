@@ -55,6 +55,15 @@ struct BranchyardApp: App {
                     .keyboardShortcut("u", modifiers: [.command, .shift])
                 Button("Publish to GitHub…") { state.selectedTab?.showPublish = true }
                     .disabled(state.selectedTab == nil)
+                Button("Create Pull Request") { state.selectedTab?.createPullRequest() }
+                    .disabled(state.selectedTab == nil)
+                Divider()
+                Button("Search Commits") { state.selectedTab?.openSearch() }
+                    .keyboardShortcut("f")
+                    .disabled(state.selectedTab == nil)
+                Button("Command Palette…") { state.selectedTab?.showPalette = true }
+                    .keyboardShortcut("p")
+                    .disabled(state.selectedTab == nil)
                 Divider()
                 Button("Close Tab") {
                     if let id = state.selectedTabID { state.closeTab(id) }

@@ -7,6 +7,8 @@ import AppKit
 ///   "Push after committing" is on.
 /// - `BRANCHYARD_AMEND=1` turns on "Amend previous commit" after 1 s.
 /// - `BRANCHYARD_SHEET=tag|rename|upstream` opens that sheet (HEAD / current branch) after 1.5 s.
+/// - `BRANCHYARD_SEARCH=<text>` opens commit search with that text after 1.5 s.
+/// - `BRANCHYARD_PALETTE=<text>` opens the command palette with that text typed after 1.5 s.
 /// - `BRANCHYARD_RIGHTCLICK=<x>,<y>` (window points, from the top left) sends a right-click there
 ///   after 4 s, logs any menu that opens with its screen frame, then quits.
 enum DebugHooks {
@@ -33,6 +35,18 @@ enum DebugHooks {
                 case "upstream": current.map { tab.branchRequest = BranchRequest(kind: .upstream, branch: $0) }
                 default: break
                 }
+            }
+        }
+        if let query = env["BRANCHYARD_SEARCH"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                state.selectedTab?.openSearch()
+                state.selectedTab?.commitSearch = query
+            }
+        }
+        if let query = env["BRANCHYARD_PALETTE"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                PaletteDebug.query = query
+                state.selectedTab?.showPalette = true
             }
         }
         if let message = env["BRANCHYARD_COMMIT"] {
@@ -111,4 +125,10 @@ enum DebugHooks {
             }
         }
     }
+}
+
+/// Text the command palette starts with (debug hook only).
+@MainActor
+enum PaletteDebug {
+    static var query = ""
 }

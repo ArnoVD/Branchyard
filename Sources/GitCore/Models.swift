@@ -111,7 +111,7 @@ public struct Stash: Identifiable, Hashable, Sendable {
 }
 
 public enum OperationState: String, Sendable {
-    case none, merging, rebasing, cherryPicking
+    case none, merging, rebasing, cherryPicking, reverting
 
     public var label: String {
         switch self {
@@ -119,6 +119,7 @@ public enum OperationState: String, Sendable {
         case .merging: return "Merge in progress"
         case .rebasing: return "Rebase in progress"
         case .cherryPicking: return "Cherry-pick in progress"
+        case .reverting: return "Revert in progress"
         }
     }
 }
