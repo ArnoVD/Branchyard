@@ -620,6 +620,14 @@ check(wcDiff.contains { $0.kind == .added && $0.text == "+local" } && wcDiff.con
 let cmpWCMB = try await fr.compare("side", nil, sinceMergeBase: true)
 check(!cmpWCMB.files.contains { $0.path == "other.txt" } && cmpWCMB.files.contains { $0.path == "new.txt" },
       "working copy since the merge base")
+try write(fh, "fresh.txt", "brand new\n")
+let cmpNew = try await fr.compare("HEAD", nil)
+check(cmpNew.files.map(\.path) == ["fresh.txt", "new.txt"] && cmpNew.files.first?.kind == .untracked,
+      "compare with the working copy lists untracked files")
+let freshDiff = try await fr.diff(of: cmpNew.files[0], from: "HEAD", to: nil)
+check(freshDiff.contains { $0.kind == .added && $0.text == "+brand new" }, "diff of an untracked file in a compare")
+try write(fh, ".git/info/exclude", "fresh.txt\n")
+check(try await !fr.compare("HEAD", nil).files.contains { $0.path == "fresh.txt" }, "ignored files stay out of a compare")
 
 // MARK: hidden and solo branches
 try await sh(fh, "branch", "weird", "side")
