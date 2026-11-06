@@ -7,6 +7,42 @@ struct NewBranchRequest: Identifiable {
     let startPoint: String?     // nil = current HEAD
 }
 
+/// "Create Tag Here…" on a commit.
+struct NewTagRequest: Identifiable {
+    let id = UUID()
+    let sha: String
+    let subject: String
+}
+
+/// Rename / Set Upstream sheets for a local branch.
+struct BranchRequest: Identifiable {
+    enum Kind { case rename, upstream }
+    let id = UUID()
+    let kind: Kind
+    let branch: Branch
+}
+
+/// A push the remote rejected because it has commits we don't.
+struct ForcePushOffer: Identifiable {
+    let id = UUID()
+    let status: RepoStatus
+    var target: String { status.upstream ?? status.branch ?? "the remote" }
+}
+
+extension Repository.PullMode {
+    static let storageKey = "pull.mode"
+    /// The mode picked in the Pull menu (fast-forward if possible by default).
+    static var preferred: Self { UserDefaults.standard.string(forKey: storageKey).flatMap(Self.init) ?? .merge }
+
+    var title: String {
+        switch self {
+        case .merge: "Fast-forward if possible"
+        case .fastForwardOnly: "Fast-forward only"
+        case .rebase: "Rebase"
+        }
+    }
+}
+
 /// State and actions for one open repository tab.
 @MainActor
 final class RepoModel: ObservableObject, Identifiable {
@@ -57,6 +93,8 @@ final class RepoModel: ObservableObject, Identifiable {
     private var toastTitle: String?
     private var toastDetail: String?
     private var toastOverride: Toast?
+    /// The operation reported its outcome another way (e.g. the force push offer): no toast.
+    private var skipToast = false
     /// Local commits a push would send: `ahead` with an upstream, else commits no remote has yet.
     @Published var unpushed = 0
     /// Last long-running operation, for the status bar.
@@ -68,6 +106,22 @@ final class RepoModel: ObservableObject, Identifiable {
     @Published var errorMessage: String?
     @Published var notice: String?
     @Published var newBranchRequest: NewBranchRequest?
+    @Published var newTagRequest: NewTagRequest?
+    @Published var branchRequest: BranchRequest?
+    @Published var forcePushOffer: ForcePushOffer?
+    @Published var remotes: [String] = []
+    /// "Amend previous commit": the next commit replaces HEAD instead of adding one.
+    @Published var amend = false {
+        didSet {
+            guard amend, !oldValue else { return }
+            Task {
+                if amend, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   let last = await repo.lastCommitMessage() {
+                    commitMessage = last
+                }
+            }
+        }
+    }
     /// The "Publish to GitHub" sheet.
     @Published var showPublish = false
 
@@ -119,8 +173,13 @@ final class RepoModel: ObservableObject, Identifiable {
     var canCommit: Bool {
         busy == nil
             && status.conflicted.isEmpty
-            && (!status.staged.isEmpty || opState == .merging)
+            && (!status.staged.isEmpty || opState == .merging || (amend && !commits.isEmpty))
             && !commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Amending a commit the remote already has means a force push later.
+    var amendRewritesPushed: Bool {
+        amend && status.upstream != nil && unpushed == 0 && status.behind == 0
     }
 
     // MARK: loading
@@ -137,7 +196,9 @@ final class RepoModel: ObservableObject, Identifiable {
             async let op = repo.operationState()
             async let lg = repo.log()
             async let tg = repo.tags()
-            let (newStatus, newBranches, newStashes, newOp, newLog, newTags) = try await (s, b, st, op, lg, tg)
+            async let rm = repo.remotes()
+            let (newStatus, newBranches, newStashes, newOp, newLog, newTags, newRemotes) = try await (s, b, st, op, lg, tg, rm)
+            if remotes != newRemotes { remotes = newRemotes }
             if tags != newTags { tags = newTags }
             if status != newStatus { status = newStatus }
             let pending = newStatus.upstream != nil ? newStatus.ahead
@@ -306,6 +367,7 @@ final class RepoModel: ObservableObject, Identifiable {
         toastTitle = nil
         toastDetail = nil
         toastOverride = nil
+        skipToast = false
         Task {
             var ok = true
             do { try await operation() } catch { ok = false; errorMessage = error.localizedDescription }
@@ -314,7 +376,7 @@ final class RepoModel: ObservableObject, Identifiable {
             busy = nil
             busyAction = nil
             // Conflicts show the banner instead.
-            if ok, notice == nil {
+            if ok, notice == nil, !skipToast {
                 showToast(toastOverride ?? Toast(title: toastTitle ?? action?.successTitle ?? activity.text,
                                                  detail: toastDetail))
             }
@@ -456,7 +518,8 @@ final class RepoModel: ObservableObject, Identifiable {
         guard !result.succeeded else { return }
         let s = try await repo.status()
         if !s.conflicted.isEmpty {
-            notice = "\(what) produced \(s.conflicted.count) conflict(s). Resolve them, then commit."
+            let next = await repo.operationState() == .rebasing ? "click Continue" : "commit"
+            notice = "\(what) produced \(s.conflicted.count) conflict(s). Resolve them, then \(next)."
             selectedCommitSHA = nil
             selectedChangeID = s.conflicted.first?.id
         } else {
@@ -473,13 +536,25 @@ final class RepoModel: ObservableObject, Identifiable {
         }
     }
 
-    func pull() {
+    /// Fetches quietly in the background (auto-fetch): no spinner, toast or error alert.
+    func autoFetch() {
+        guard busy == nil, loaded, !remotes.isEmpty else { return }
+        Task {
+            guard (try? await repo.fetch()) != nil else { return }
+            await refresh()
+        }
+    }
+
+    /// `mode` also becomes the default for the Pull button.
+    func pull(mode: Repository.PullMode? = nil) {
+        if let mode { UserDefaults.standard.set(mode.rawValue, forKey: Repository.PullMode.storageKey) }
+        let mode = mode ?? .preferred
         forgetUndo()
         let branch = status.branch ?? "HEAD"
         let upstream = status.upstream
         run("Pulling…", on: .pull) {
             let before = await self.repo.headSHA()
-            let result = try await self.repo.pull()
+            let result = try await self.repo.pull(mode: mode)
             try await self.handleMayConflict(result, what: "Pull")
             let after = await self.repo.headSHA()
             let from = upstream.map { " from \($0)" } ?? ""
@@ -540,7 +615,13 @@ final class RepoModel: ObservableObject, Identifiable {
 
     private func pushNow(_ current: RepoStatus) {
         run("Pushing…", on: .push) {
-            try await self.repo.push(currentStatus: current)
+            do {
+                try await self.repo.push(currentStatus: current)
+            } catch let error as GitError where Self.isRejected(error.output) {
+                self.skipToast = true
+                self.forcePushOffer = ForcePushOffer(status: current)
+                return
+            }
             let branch = current.branch ?? "HEAD"
             if let upstream = current.upstream {
                 let n = current.ahead
@@ -550,6 +631,20 @@ final class RepoModel: ObservableObject, Identifiable {
             } else {
                 self.toastDetail = "\(branch) published to the remote"
             }
+        }
+    }
+
+    private static func isRejected(_ output: String) -> Bool {
+        ["[rejected]", "non-fast-forward", "fetch first", "stale info"].contains { output.contains($0) }
+    }
+
+    /// Overwrites the remote branch with ours, unless someone pushed since our last fetch.
+    func forcePush(_ offer: ForcePushOffer) {
+        forcePushOffer = nil
+        run("Force pushing…", on: .push) {
+            try await self.repo.push(currentStatus: offer.status, force: true)
+            self.toastTitle = "Force Pushed"
+            self.toastDetail = "\(offer.status.branch ?? "HEAD") replaced \(offer.target)"
         }
     }
 
@@ -601,15 +696,18 @@ final class RepoModel: ObservableObject, Identifiable {
     func commit(andPush: Bool = false) {
         guard canCommit else { return }
         let message = commitMessage
+        let amending = amend
         var pushAfter: (@MainActor () -> Void)?
         if andPush { pushAfter = { self.push() } }
-        runUndoable("Committing…", then: pushAfter) {
+        runUndoable(amending ? "Amending…" : "Committing…", then: pushAfter) {
+            // Amend: undo goes back to the commit it replaced.
             let parent = await self.repo.headSHA()
-            try await self.repo.commit(message: message)
+            try await self.repo.commit(message: message, amend: amending)
             self.commitMessage = ""
+            self.amend = false
             let subject: String = message.split(separator: "\n").first.map { String($0) } ?? ""
             let head: String? = await self.repo.headSHA()
-            self.toastTitle = "Committed"
+            self.toastTitle = amending ? "Commit Amended" : "Committed"
             self.toastDetail = head.map { "\($0.prefix(7)) · \(subject)" } ?? subject
             // A first commit has no parent to go back to.
             guard let parent, let sha = head else { return nil }
@@ -687,6 +785,85 @@ final class RepoModel: ObservableObject, Identifiable {
             let sha = await self.repo.sha(of: "refs/heads/\(branch.name)")
             try await self.repo.deleteBranch(branch.name, force: force)
             return sha.map { .deleteBranch(name: branch.name, sha: $0) }
+        }
+    }
+
+    func renameBranch(_ branch: Branch, to newName: String) {
+        run("Renaming branch…") {
+            self.toastTitle = "Branch Renamed"
+            self.toastDetail = "\(branch.name) → \(newName)"
+            try await self.repo.renameBranch(branch.name, to: newName)
+        }
+    }
+
+    /// `upstream` like "origin/main"; nil stops tracking.
+    func setUpstream(of branch: Branch, to upstream: String?) {
+        run("Setting upstream…") {
+            self.toastTitle = upstream == nil ? "Upstream Removed" : "Upstream Set"
+            self.toastDetail = upstream.map { "\(branch.name) tracks \($0)" } ?? "\(branch.name) no longer tracks a remote branch"
+            try await self.repo.setUpstream(of: branch.name, to: upstream)
+        }
+    }
+
+    /// Pushes any local branch, checked out or not.
+    func pushBranch(_ branch: Branch) {
+        if branch.isCurrent { push(); return }
+        run("Pushing \(branch.name)…", on: .push) {
+            try await self.repo.pushBranch(branch)
+            if let upstream = branch.upstream, !branch.upstreamGone {
+                let n = branch.ahead
+                self.toastDetail = n > 0 ? "\(n) commit\(n == 1 ? "" : "s") pushed to \(upstream)"
+                    : "\(branch.name) was already up to date with \(upstream)"
+            } else {
+                self.toastDetail = "\(branch.name) published to the remote"
+            }
+        }
+    }
+
+    // MARK: tags
+
+    /// `pushTo`: also push the new tag to that remote.
+    func createTag(_ name: String, at sha: String, message: String?, pushTo remote: String? = nil) {
+        run("Creating tag…") {
+            self.toastTitle = remote == nil ? "Tag Created" : "Tag Created and Pushed"
+            self.toastDetail = "\(name) at \(sha.prefix(7))" + (remote.map { " · pushed to \($0)" } ?? "")
+            try await self.repo.createTag(name, at: sha, message: message)
+            if let remote { try await self.repo.pushTag(name, to: remote) }
+        }
+    }
+
+    func deleteTag(_ tag: GitTag) {
+        run("Deleting tag…") {
+            self.toastTitle = "Tag Deleted"
+            self.toastDetail = "\(tag.name) (local)"
+            try await self.repo.deleteTag(tag.name)
+        }
+    }
+
+    func pushTag(_ tag: GitTag, to remote: String) {
+        run("Pushing tag…", on: .push) {
+            self.toastTitle = "Tag Pushed"
+            self.toastDetail = "\(tag.name) to \(remote)"
+            try await self.repo.pushTag(tag.name, to: remote)
+        }
+    }
+
+    func deleteRemoteTag(_ tag: GitTag, from remote: String) {
+        run("Deleting tag from \(remote)…") {
+            self.toastTitle = "Tag Deleted"
+            self.toastDetail = "\(tag.name) removed from \(remote)"
+            try await self.repo.deleteRemoteTag(tag.name, from: remote)
+        }
+    }
+
+    // MARK: .gitignore
+
+    /// `untrack`: committed files to stop tracking (they stay on disk).
+    func ignore(_ patterns: [String], untrack: [String] = []) {
+        run("Updating .gitignore…") {
+            self.toastTitle = untrack.isEmpty ? "Added to .gitignore" : "Untracked and Ignored"
+            self.toastDetail = patterns.count == 1 ? patterns[0] : "\(patterns.count) entries"
+            try await self.repo.ignore(patterns, untrack: untrack)
         }
     }
 
@@ -829,7 +1006,8 @@ struct Activity: Equatable {
             ("Merging", "Merged"), ("Switching", "Switched"), ("Creating", "Created"), ("Deleting", "Deleted"),
             ("Aborting", "Aborted"), ("Continuing", "Continued"), ("Marking", "Marked"),
             ("Resolving", "Resolved"), ("Saving", "Saved"), ("Discarding", "Discarded"),
-            ("Undoing", "Undid"), ("Redoing", "Redid"),
+            ("Undoing", "Undid"), ("Redoing", "Redid"), ("Amending", "Amended"), ("Renaming", "Renamed"),
+            ("Setting", "Set"), ("Updating", "Updated"),
         ]
         for (ing, ed) in past where verb.hasPrefix(ing) { return ed + verb.dropFirst(ing.count) }
         return "\(verb) done"

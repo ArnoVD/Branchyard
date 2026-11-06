@@ -250,5 +250,124 @@ GitIdentity.environment = [:]
 let plain = try await Git(directory: work).run(["config", "--get", "http.https://github.com/.extraheader"], allowFailure: true)
 check(!plain.succeeded, "no header without a profile token")
 
+// MARK: quick wins: amend, pull modes, force push, tags, branch housekeeping, ignore
+let qwRemote = root.appendingPathComponent("qw.git")
+try FileManager.default.createDirectory(at: qwRemote, withIntermediateDirectories: true)
+try await sh(qwRemote, "init", "--bare", "-b", "main")
+func qwClone(_ name: String) async throws -> Repository {
+    let dir = try await Repository.clone(remoteURL: qwRemote.path, into: root, folderName: name)
+    try await sh(dir, "config", "user.name", "Check")
+    try await sh(dir, "config", "user.email", "check@example.com")
+    try await sh(dir, "config", "commit.gpgsign", "false")
+    return Repository(url: dir)
+}
+func out(_ r: Repository, _ args: String...) async throws -> String {
+    try await Git(directory: r.url).run(Array(args)).stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+let qa = try await qwClone("qa")
+try write(qa.url, "a.txt", "one\n")
+try await qa.stage(["a.txt"])
+try await qa.commit(message: "first")
+try await qa.push(currentStatus: try await qa.status())
+
+// Amend: message only, then with a staged file. Still one commit on top.
+try write(qa.url, "b.txt", "bee\n")
+try await qa.stage(["b.txt"])
+try await qa.commit(message: "second")
+check(await qa.lastCommitMessage() == "second", "last commit message")
+try await qa.commit(message: "second, reworded", amend: true)
+check(try await out(qa, "rev-list", "--count", "HEAD") == "2", "amend keeps commit count")
+check(await qa.lastCommitMessage() == "second, reworded", "amend rewrites message")
+try write(qa.url, "c.txt", "sea\n")
+try await qa.stage(["c.txt"])
+try await qa.commit(message: "second + c", amend: true)
+check(try await out(qa, "show", "--name-only", "--format=", "HEAD").contains("c.txt"), "amend adds staged file")
+try await qa.push(currentStatus: try await qa.status())
+
+// Force push: amend a pushed commit → plain push rejected, force-with-lease goes through.
+try await qa.commit(message: "second, amended after push", amend: true)
+var rejection = ""
+do { try await qa.push(currentStatus: try await qa.status()) } catch let e as GitError { rejection = e.output }
+check(rejection.contains("rejected") || rejection.contains("non-fast-forward"), "push of rewritten commit rejected")
+try await qa.push(currentStatus: try await qa.status(), force: true)
+check(try await out(qa, "rev-parse", "HEAD") == (try await out(qa, "ls-remote", "origin", "refs/heads/main")).prefix(40).description,
+      "force push replaced remote branch")
+
+// Pull modes on diverged branches.
+let qb = try await qwClone("qb")
+func diverge(_ tag: String) async throws {
+    try write(qa.url, "a-\(tag).txt", "a\n"); try await qa.stage(["a-\(tag).txt"]); try await qa.commit(message: "a \(tag)")
+    try await qa.push(currentStatus: try await qa.status())
+    try write(qb.url, "b-\(tag).txt", "b\n"); try await qb.stage(["b-\(tag).txt"]); try await qb.commit(message: "b \(tag)")
+}
+try await diverge("1")
+let ffOnly = try await qb.pull(mode: .fastForwardOnly)
+check(!ffOnly.succeeded, "fast-forward-only pull refuses diverged branches")
+let rebased = try await qb.pull(mode: .rebase)
+let mergesAfterRebase = try await out(qb, "rev-list", "--merges", "--count", "HEAD")
+check(rebased.succeeded && mergesAfterRebase == "0", "rebase pull stays linear")
+check(try await out(qb, "log", "-1", "--format=%s") == "b 1", "rebase pull replays local commit on top")
+try await qb.push(currentStatus: try await qb.status())
+_ = try await qa.pull(mode: .fastForwardOnly)
+try await diverge("2")
+let merged = try await qb.pull(mode: .merge)
+let mergesAfterMerge = try await out(qb, "rev-list", "--merges", "--count", "HEAD")
+check(merged.succeeded && mergesAfterMerge == "1", "merge pull makes a merge commit")
+try await sh(qb.url, "reset", "--hard", "origin/main")
+let ffPull = try await qb.pull(mode: .merge)
+check(ffPull.succeeded, "pull when already up to date")
+
+// Tags: lightweight + annotated, push, delete remote, delete local.
+let head = try await out(qb, "rev-parse", "HEAD")
+try await qb.createTag("v1.0", at: head, message: nil)
+try await qb.createTag("v1.1", at: "HEAD~1", message: "Release 1.1")
+let qbTags = try await qb.tags()
+check(qbTags.contains { $0.name == "v1.0" && $0.sha == head } && qbTags.contains { $0.name == "v1.1" }, "tags created")
+check(try await out(qb, "cat-file", "-t", "v1.1") == "tag", "tag with message is annotated")
+try await qb.pushTag("v1.1", to: "origin")
+check(try await out(qb, "ls-remote", "--tags", "origin").contains("refs/tags/v1.1"), "tag pushed")
+try await qb.deleteRemoteTag("v1.1", from: "origin")
+check(!(try await out(qb, "ls-remote", "--tags", "origin").contains("refs/tags/v1.1")), "remote tag deleted")
+try await qb.deleteTag("v1.0")
+check(!(try await qb.tags().contains { $0.name == "v1.0" }), "local tag deleted")
+
+// Branch housekeeping: push a branch you're not on, rename it, set/unset upstream.
+try await sh(qb.url, "branch", "topic")
+var topic = try await qb.branches().first { $0.name == "topic" }!
+try await qb.pushBranch(topic)
+topic = try await qb.branches().first { $0.name == "topic" }!
+let qbBranch = try await qb.status().branch
+check(topic.upstream == "origin/topic" && qbBranch == "main", "push of other branch sets its upstream, HEAD stays")
+try await qb.renameBranch("topic", to: "topic-2")
+let renamed = try await qb.branches().first { $0.name == "topic-2" }
+check(renamed?.upstream == "origin/topic", "rename keeps upstream")
+try await qb.setUpstream(of: "topic-2", to: nil)
+check(try await qb.branches().first { $0.name == "topic-2" }?.upstream == nil, "upstream unset")
+try await qb.setUpstream(of: "topic-2", to: "origin/main")
+check(try await qb.branches().first { $0.name == "topic-2" }?.upstream == "origin/main", "upstream set")
+try await sh(qb.url, "branch", "--set-upstream-to=origin/topic", "topic-2")
+try await sh(qb.url, "switch", "topic-2")
+try write(qb.url, "t.txt", "t\n"); try await qb.stage(["t.txt"]); try await qb.commit(message: "topic work")
+try await sh(qb.url, "switch", "main")
+try await qb.pushBranch(try await qb.branches().first { $0.name == "topic-2" }!)
+check(try await out(qb, "rev-parse", "topic-2") == (try await out(qb, "ls-remote", "origin", "refs/heads/topic")).prefix(40).description,
+      "push of non-current branch to its upstream")
+
+// Ignore: untracked file, extension, tracked file (untracked but kept on disk), no duplicates.
+try write(qb.url, "debug.log", "x\n")
+try write(qb.url, "build/out.bin", "x\n")
+try await qb.ignore(["*.log"])
+try await qb.ignore(["/build/", "*.log"])
+var qs = try await qb.status()
+check(!qs.allChanges.contains { $0.path == "debug.log" || $0.path.hasPrefix("build") }, "ignored files leave the list")
+let gitignore = try String(contentsOf: qb.url.appendingPathComponent(".gitignore"), encoding: .utf8)
+check(gitignore == "*.log\n/build/\n", "ignore rules added once (\(gitignore.debugDescription))")
+try await qb.ignore(["/a.txt"], untrack: ["a.txt"])
+qs = try await qb.status()
+check(qs.staged.contains { $0.path == "a.txt" && $0.kind == .deleted }
+      && FileManager.default.fileExists(atPath: qb.url.appendingPathComponent("a.txt").path), "stop tracking keeps file on disk")
+try await qb.ignore(["/nothing-tracked/"], untrack: ["nothing-tracked"])
+check(true, "untracking a folder with no tracked files is fine")
+
 print(failures == 0 ? "\nAll checks passed." : "\n\(failures) check(s) failed.")
 exit(failures == 0 ? 0 : 1)

@@ -177,6 +177,7 @@ private struct CommitRowView: View {
     private var menu: some View {
         if !commit.isWIP {
             Button("Create Branch Here…") { model.newBranchRequest = NewBranchRequest(startPoint: commit.sha) }
+            Button("Create Tag Here…") { model.newTagRequest = NewTagRequest(sha: commit.sha, subject: commit.subject) }
             Divider()
             Button("Copy Commit SHA") { model.copyToPasteboard(commit.sha, what: "Commit SHA \(commit.sha.prefix(7))") }
             Button("Copy Commit Message") { model.copyToPasteboard(commit.subject, what: "Commit message") }

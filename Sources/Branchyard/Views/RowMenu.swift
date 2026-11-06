@@ -5,6 +5,7 @@ import AppKit
 enum RowMenuItem {
     case action(String, () -> Void)
     case divider
+    case submenu(String, [RowMenuItem])
 }
 
 /// Right-click menu for a list row, shown by AppKit right at the mouse.
@@ -69,6 +70,10 @@ final class RowMenuView: NSView {
     func buildMenu() -> NSMenu? {
         let entries = items()
         guard !entries.isEmpty else { return nil }
+        return Self.menu(entries)
+    }
+
+    private static func menu(_ entries: [RowMenuItem]) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
         for entry in entries {
@@ -77,6 +82,10 @@ final class RowMenuView: NSView {
                 if let last = menu.items.last, !last.isSeparatorItem { menu.addItem(.separator()) }
             case .action(let title, let run):
                 menu.addItem(ClosureMenuItem(title: title, run: run))
+            case .submenu(let title, let children):
+                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                item.submenu = Self.menu(children)
+                menu.addItem(item)
             }
         }
         if menu.items.last?.isSeparatorItem == true { menu.removeItem(at: menu.items.count - 1) }

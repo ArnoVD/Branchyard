@@ -1,4 +1,5 @@
 import SwiftUI
+import GitCore
 
 /// Branchyard ▸ Settings… (⌘,)
 struct SettingsView: View {
@@ -13,6 +14,9 @@ struct SettingsView: View {
             EditorSettings()
                 .tabItem { Label("Editor", systemImage: "textformat") }
                 .tag("editor")
+            GitSettings()
+                .tabItem { Label("Git", systemImage: "arrow.triangle.branch") }
+                .tag("git")
             ProfilesSettings()
                 .tabItem { Label("Profiles", systemImage: "person.2") }
                 .tag("profiles")
@@ -143,6 +147,40 @@ private struct ThemeCard: View {
 }
 
 // MARK: - Editor
+
+private struct GitSettings: View {
+    @AppStorage(AutoFetch.minutesKey) private var autoFetch = AutoFetch.defaultMinutes
+    @AppStorage(Repository.PullMode.storageKey) private var pullMode = Repository.PullMode.merge.rawValue
+    @AppStorage("commit.pushAfter") private var pushAfter = false
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Fetch automatically", selection: $autoFetch) {
+                    Text("Off").tag(0)
+                    Divider()
+                    ForEach([1, 2, 5, 10, 15, 30], id: \.self) { Text("Every \($0) min").tag($0) }
+                }
+            } header: {
+                Text("Remote")
+            } footer: {
+                Text("Keeps the Pull and Push counts up to date for every open tab. Fetching never changes your branches.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Pull") {
+                Picker("Pull button", selection: $pullMode) {
+                    ForEach(Repository.PullMode.allCases, id: \.self) { Text($0.title).tag($0.rawValue) }
+                }
+                .pickerStyle(.radioGroup)
+            }
+            Section("Commit") {
+                Toggle("Push after committing", isOn: $pushAfter)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(height: 460)
+    }
+}
 
 private struct EditorSettings: View {
     @AppStorage(EditorPrefs.fontKey) private var family = ""

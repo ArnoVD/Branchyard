@@ -62,12 +62,21 @@ private struct WindowConfigurator: NSViewRepresentable {
                     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
                 }
             }
-            if let path = ProcessInfo.processInfo.environment["BRANCHYARD_SNAPSHOT"] {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                    guard let frameView = window.contentView?.superview,
-                          let rep = frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds) else { return }
-                    frameView.cacheDisplay(in: frameView.bounds, to: rep)
-                    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+            let env = ProcessInfo.processInfo.environment
+            if let path = env["BRANCHYARD_SNAPSHOT"] {
+                // BRANCHYARD_SNAPSHOT_DELAY: seconds (default 3). An open sheet is saved next to it as …-sheet.png.
+                let delay = env["BRANCHYARD_SNAPSHOT_DELAY"].flatMap(Double.init) ?? 3
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    func save(_ w: NSWindow, _ path: String) {
+                        guard let frameView = w.contentView?.superview,
+                              let rep = frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds) else { return }
+                        frameView.cacheDisplay(in: frameView.bounds, to: rep)
+                        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+                    }
+                    save(window, path)
+                    if let sheet = window.attachedSheet {
+                        save(sheet, (path as NSString).deletingPathExtension + "-sheet.png")
+                    }
                 }
             }
         }

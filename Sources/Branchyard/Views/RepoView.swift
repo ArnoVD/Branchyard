@@ -83,6 +83,26 @@ struct RepoView: View {
         .sheet(isPresented: $model.showPublish) {
             PublishSheet(model: model)
         }
+        .sheet(item: $model.newTagRequest) { request in
+            NewTagSheet(model: model, request: request)
+        }
+        .sheet(item: $model.branchRequest) { request in
+            switch request.kind {
+            case .rename: RenameBranchSheet(model: model, branch: request.branch)
+            case .upstream: UpstreamSheet(model: model, branch: request.branch)
+            }
+        }
+        .confirmationDialog("The remote has commits you don't have",
+                            isPresented: Binding(get: { model.forcePushOffer != nil },
+                                                 set: { if !$0 { model.forcePushOffer = nil } }),
+                            presenting: model.forcePushOffer) { offer in
+            Button("Force Push", role: .destructive) { model.forcePush(offer) }
+            Button("Pull First") { model.pull() }
+            Button("Cancel", role: .cancel) {}
+        } message: { offer in
+            Text("Pushing to \(offer.target) was rejected. Force push replaces the remote branch with yours: "
+                 + "commits only on the remote are lost there. Pull first to keep them.")
+        }
         .alert("Git", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
@@ -166,6 +186,9 @@ private struct BranchesRail: View {
 private struct ActionBar: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var model: RepoModel
+    @AppStorage(Repository.PullMode.storageKey) private var pullModeRaw = Repository.PullMode.merge.rawValue
+
+    private var currentPullMode: Repository.PullMode { Repository.PullMode(rawValue: pullModeRaw) ?? .merge }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -191,10 +214,16 @@ private struct ActionBar: View {
                 Rectangle().fill(Color.byHairline).frame(width: 1, height: 30).padding(.horizontal, 8)
                 HStack(spacing: 0) {
                     tool("Pull", "arrow.down.to.line", .pull, also: .fetch, badge: model.status.behind,
-                         help: "Pull (fast-forward if possible)") { model.pull() }
+                         help: "Pull (\(currentPullMode.title.lowercased()))") { model.pull() }
                     Menu {
                         Button("Fetch All") { model.fetch() }
-                        Button("Pull") { model.pull() }
+                        Divider()
+                        Section("Pull") {
+                            ForEach(Repository.PullMode.allCases, id: \.self) { mode in
+                                Toggle(mode.title, isOn: Binding(get: { currentPullMode == mode },
+                                                                 set: { _ in model.pull(mode: mode) }))
+                            }
+                        }
                     } label: {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 8, weight: .bold))
@@ -208,7 +237,7 @@ private struct ActionBar: View {
                     .fixedSize()
                     .padding(.top, 16)
                     .disabled(model.busy != nil)
-                    .help("Fetch or pull")
+                    .help("Fetch, or pick how Pull works")
                 }
                 tool("Push", "arrow.up.to.line", .push, badge: model.unpushed, highlight: model.unpushed > 0,
                      help: pushHelp) { model.push() }

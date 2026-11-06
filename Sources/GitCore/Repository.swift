@@ -181,8 +181,34 @@ public struct Repository: Sendable, Hashable {
         }
     }
 
-    public func commit(message: String) async throws {
-        try await git.run(["commit", "-m", message])
+    public func commit(message: String, amend: Bool = false) async throws {
+        try await git.run(["commit"] + (amend ? ["--amend"] : []) + ["-m", message])
+    }
+
+    /// The full message of the last commit (for amending it).
+    public func lastCommitMessage() async -> String? {
+        guard let r = try? await git.run(["log", "-1", "--format=%B"], allowFailure: true), r.succeeded else { return nil }
+        let text = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
+    /// Adds `patterns` to the repository's top-level .gitignore (each once). `untrack` also stops
+    /// tracking `paths` that are already committed, keeping the files on disk.
+    public func ignore(_ patterns: [String], untrack paths: [String] = []) async throws {
+        let file = url.appendingPathComponent(".gitignore")
+        var text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let missing = patterns.reduce(into: [String]()) { list, p in
+            if !lines.contains(p) && !list.contains(p) { list.append(p) }
+        }
+        if !missing.isEmpty {
+            if !text.isEmpty && !text.hasSuffix("\n") { text += "\n" }
+            text += missing.joined(separator: "\n") + "\n"
+            try text.write(to: file, atomically: true, encoding: .utf8)
+        }
+        if !paths.isEmpty {
+            try await git.run(["rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--"] + paths)
+        }
     }
 
     // MARK: remotes
@@ -191,26 +217,96 @@ public struct Repository: Sendable, Hashable {
         try await git.run(["fetch", "--all", "--prune"])
     }
 
-    /// Pulls with merge unless the user configured pull.rebase. Conflicts don't throw:
-    /// check the returned result and the status afterwards.
-    public func pull() async throws -> GitResult {
-        let configured = try await git.run(["config", "--get", "pull.rebase"], allowFailure: true)
-        let args = configured.succeeded ? ["pull"] : ["pull", "--no-rebase"]
-        return try await git.run(args, allowFailure: true)
+    public enum PullMode: String, CaseIterable, Sendable {
+        /// Fast-forward when possible, otherwise a merge commit.
+        case merge
+        /// Only fast-forward; fails when the branches have diverged.
+        case fastForwardOnly
+        /// Replay your local commits on top of the upstream.
+        case rebase
+
+        var flags: [String] {
+            switch self {
+            case .merge: ["--no-rebase", "--ff"]
+            case .fastForwardOnly: ["--ff-only"]
+            case .rebase: ["--rebase"]
+            }
+        }
+    }
+
+    /// Conflicts don't throw: check the returned result and the status afterwards.
+    public func pull(mode: PullMode = .merge) async throws -> GitResult {
+        try await git.run(["pull"] + mode.flags, allowFailure: true)
     }
 
     /// Pushes the current branch; sets upstream on the first push.
-    public func push(currentStatus: RepoStatus) async throws {
+    /// `force` overwrites the remote branch, but only if it is still where we last saw it.
+    public func push(currentStatus: RepoStatus, force: Bool = false) async throws {
+        let forceFlag = force ? ["--force-with-lease"] : []
         if currentStatus.upstream == nil {
             guard currentStatus.branch != nil else {
                 throw GitError(command: "push", output: "HEAD is detached. Create a branch first.")
             }
-            let remotes = try await remotes()
-            let remote = remotes.contains("origin") ? "origin" : (remotes.first ?? "origin")
-            try await git.run(["push", "-u", remote, "HEAD"])
+            try await git.run(["push"] + forceFlag + ["-u", try await defaultRemote(), "HEAD"])
         } else {
-            try await git.run(["push"])
+            try await git.run(["push"] + forceFlag)
         }
+    }
+
+    /// "origin" when it exists, else the first remote.
+    public func defaultRemote() async throws -> String {
+        let remotes = try await remotes()
+        guard !remotes.isEmpty else { throw GitError(command: "push", output: "This repository has no remotes.") }
+        return remotes.contains("origin") ? "origin" : remotes[0]
+    }
+
+    /// Pushes a local branch that may not be checked out: to its upstream, or to the
+    /// default remote under the same name (and tracks it there).
+    public func pushBranch(_ branch: Branch) async throws {
+        if let upstream = branch.upstream, !branch.upstreamGone,
+           let slash = upstream.firstIndex(of: "/") {
+            let remote = String(upstream[..<slash])
+            let target = String(upstream[upstream.index(after: slash)...])
+            try await git.run(["push", remote, "refs/heads/\(branch.name):refs/heads/\(target)"])
+        } else {
+            try await git.run(["push", "-u", try await defaultRemote(), branch.name])
+        }
+    }
+
+    public func renameBranch(_ name: String, to newName: String) async throws {
+        try await git.run(["branch", "-m", name, newName])
+    }
+
+    /// `upstream` like "origin/main"; nil stops tracking.
+    public func setUpstream(of branch: String, to upstream: String?) async throws {
+        if let upstream {
+            try await git.run(["branch", "--set-upstream-to=\(upstream)", branch])
+        } else {
+            try await git.run(["branch", "--unset-upstream", branch])
+        }
+    }
+
+    // MARK: tags
+
+    /// An annotated tag when `message` is given, else a lightweight one.
+    public func createTag(_ name: String, at target: String, message: String?) async throws {
+        if let message, !message.isEmpty {
+            try await git.run(["tag", "-a", name, target, "-m", message])
+        } else {
+            try await git.run(["tag", name, target])
+        }
+    }
+
+    public func deleteTag(_ name: String) async throws {
+        try await git.run(["tag", "-d", name])
+    }
+
+    public func pushTag(_ name: String, to remote: String) async throws {
+        try await git.run(["push", remote, "refs/tags/\(name)"])
+    }
+
+    public func deleteRemoteTag(_ name: String, from remote: String) async throws {
+        try await git.run(["push", remote, "--delete", "refs/tags/\(name)"])
     }
 
     public func addRemote(name: String, url: String) async throws {

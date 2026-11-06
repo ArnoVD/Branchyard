@@ -36,6 +36,7 @@ final class AppState: ObservableObject {
     @Published var scanning = false
 
     private let defaults = UserDefaults.standard
+    private var autoFetchTimer: Timer?
 
     init() {
         library = (defaults.stringArray(forKey: "library") ?? []).map(LibraryRepo.init(path:))
@@ -54,6 +55,11 @@ final class AppState: ObservableObject {
         let restored = tabs
         Task { for tab in restored { await tab.refresh() } }
 
+        // Auto-fetch: every minute, fetch the tabs whose last fetch is older than the setting.
+        autoFetchTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.autoFetchDue() }
+        }
+
         // Pick up changes made in Terminal / an editor when you switch back to the app.
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
@@ -63,6 +69,15 @@ final class AppState: ObservableObject {
     }
 
     var selectedTab: RepoModel? { tabs.first { $0.id == selectedTabID } }
+
+    private func autoFetchDue() {
+        let minutes = defaults.object(forKey: AutoFetch.minutesKey) as? Int ?? AutoFetch.defaultMinutes
+        guard minutes > 0 else { return }
+        let cutoff = Date().addingTimeInterval(-Double(minutes) * 60)
+        for tab in tabs where (tab.lastFetched ?? .distantPast) < cutoff {
+            tab.autoFetch()
+        }
+    }
 
     var defaultCloneFolder: URL {
         get {
@@ -215,4 +230,9 @@ final class AppState: ObservableObject {
             alert = "Found \(found.count) repositories in \(folder.lastPathComponent) (\(library.count - before) new)."
         }
     }
+}
+
+enum AutoFetch {
+    static let minutesKey = "fetch.autoMinutes"
+    static let defaultMinutes = 5
 }

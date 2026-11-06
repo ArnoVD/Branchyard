@@ -37,6 +37,20 @@ Settings → Accounts: connect a GitHub token to a profile. Repository → Publi
 creates the repository on that account and pushes. Identity and token are passed to git
 per command; your ~/.gitconfig is never changed.
 
+## Git options
+
+Settings → Git: fetch automatically (every 1–30 min), pick what the Pull button does
+(fast-forward if possible, fast-forward only, or rebase) and push after every commit.
+The Pull button's dropdown switches the mode too.
+
+- **Amend:** Commit options → "Amend previous commit" rewrites the last commit with the
+  staged files and the edited message.
+- **Force push:** when the remote has commits you don't have, Push offers Force Push
+  (`--force-with-lease`) or Pull First.
+- **Tags:** right-click a commit → Create Tag Here…; right-click a tag to push or delete it.
+- **Branches:** right-click a branch to push it, rename it or set its upstream.
+- **Ignore:** right-click a file → Ignore, for that file, its extension or its folder.
+
 ## Shortcuts
 
 | Action | Keys |

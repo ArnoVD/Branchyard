@@ -10,6 +10,14 @@ struct BranchesPanel: View {
     @ViewState private var collapsed: Set<String> = ["sec:remote", "sec:stashes", "sec:tags"]
     @ViewState private var branchToDelete: Branch?
     @ViewState private var stashToDrop: Stash?
+    @ViewState private var tagToDelete: TagDeletion?
+
+    /// A tag to delete locally (`remote == nil`) or from a remote.
+    private struct TagDeletion: Identifiable {
+        let tag: GitTag
+        let remote: String?
+        var id: String { tag.name + "@" + (remote ?? "") }
+    }
     @FocusState private var filterFocused: Bool
 
     var body: some View {
@@ -63,6 +71,20 @@ struct BranchesPanel: View {
             Button("Drop \(stash.ref)", role: .destructive) { model.drop(stash) }
         } message: { stash in
             Text("“\(stash.message)” will be deleted.")
+        }
+        .confirmationDialog(
+            tagToDelete.map { $0.remote == nil ? "Delete tag \($0.tag.name)?" : "Delete tag \($0.tag.name) from \($0.remote!)?" } ?? "",
+            isPresented: Binding(get: { tagToDelete != nil }, set: { if !$0 { tagToDelete = nil } }),
+            presenting: tagToDelete
+        ) { target in
+            Button("Delete", role: .destructive) {
+                if let remote = target.remote { model.deleteRemoteTag(target.tag, from: remote) }
+                else { model.deleteTag(target.tag) }
+            }
+        } message: { target in
+            Text(target.remote == nil
+                 ? "Only your local tag is deleted. The commit stays, and a pushed tag stays on the remote."
+                 : "The tag is removed from \(target.remote!) for everyone. Your local tag stays.")
         }
     }
 
@@ -282,6 +304,19 @@ struct BranchesPanel: View {
             items.append(.action("New Branch from \(branch.name)…") {
                 model.newBranchRequest = NewBranchRequest(startPoint: branch.name)
             })
+            if !branch.isRemote {
+                items.append(.divider)
+                if !model.remotes.isEmpty {
+                    let target = branch.upstreamGone ? nil : branch.upstream
+                    items.append(.action("Push \(branch.name)\(target.map { " to \($0)" } ?? "")") { model.pushBranch(branch) })
+                }
+                items.append(.action("Rename \(branch.name)…") {
+                    model.branchRequest = BranchRequest(kind: .rename, branch: branch)
+                })
+                items.append(.action("Set Upstream…") {
+                    model.branchRequest = BranchRequest(kind: .upstream, branch: branch)
+                })
+            }
             items.append(.divider)
             items.append(.action("Copy Name") { model.copyToPasteboard(branch.nameWithoutRemote, what: branch.nameWithoutRemote) })
             if !branch.isRemote && !branch.isCurrent {
@@ -297,12 +332,25 @@ struct BranchesPanel: View {
                 .action("Drop…") { stashToDrop = stash },
             ]
         } else if let tag = tag(for: id) {
-            return [
+            var items: [RowMenuItem] = [
                 .action("New Branch from \(tag.name)…") {
                     model.newBranchRequest = NewBranchRequest(startPoint: tag.name)
                 },
-                .action("Copy Name") { model.copyToPasteboard(tag.name, what: tag.name) },
+                .divider,
             ]
+            for remote in model.remotes {
+                items.append(.action("Push \(tag.name) to \(remote)") { model.pushTag(tag, to: remote) })
+            }
+            items.append(.divider)
+            items.append(.action("Copy Name") { model.copyToPasteboard(tag.name, what: tag.name) })
+            items.append(.divider)
+            items.append(.action("Delete \(tag.name)…") { tagToDelete = TagDeletion(tag: tag, remote: nil) })
+            for remote in model.remotes {
+                items.append(.action("Delete \(tag.name) from \(remote)…") {
+                    tagToDelete = TagDeletion(tag: tag, remote: remote)
+                })
+            }
+            return items
         }
         return []
     }

@@ -5,6 +5,8 @@ import AppKit
 /// - `BRANCHYARD_SELECT_FIRST_FILE=1` opens the diff of the first changed file.
 /// - `BRANCHYARD_COMMIT=<message>` commits what's staged after 1.5 s, pushing too when
 ///   "Push after committing" is on.
+/// - `BRANCHYARD_AMEND=1` turns on "Amend previous commit" after 1 s.
+/// - `BRANCHYARD_SHEET=tag|rename|upstream` opens that sheet (HEAD / current branch) after 1.5 s.
 /// - `BRANCHYARD_RIGHTCLICK=<x>,<y>` (window points, from the top left) sends a right-click there
 ///   after 4 s, logs any menu that opens with its screen frame, then quits.
 enum DebugHooks {
@@ -16,6 +18,21 @@ enum DebugHooks {
             // Opens the diff of the first changed file once the repository has loaded.
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 state.selectedTab?.selectedChangeID = state.selectedTab?.status.allChanges.first?.id
+            }
+        }
+        if env["BRANCHYARD_AMEND"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { state.selectedTab?.amend = true }
+        }
+        if let sheet = env["BRANCHYARD_SHEET"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                guard let tab = state.selectedTab, let head = tab.graph.first(where: { !$0.commit.isWIP })?.commit else { return }
+                let current = tab.localBranches.first(where: \.isCurrent)
+                switch sheet {
+                case "tag": tab.newTagRequest = NewTagRequest(sha: head.sha, subject: head.subject)
+                case "rename": current.map { tab.branchRequest = BranchRequest(kind: .rename, branch: $0) }
+                case "upstream": current.map { tab.branchRequest = BranchRequest(kind: .upstream, branch: $0) }
+                default: break
+                }
             }
         }
         if let message = env["BRANCHYARD_COMMIT"] {

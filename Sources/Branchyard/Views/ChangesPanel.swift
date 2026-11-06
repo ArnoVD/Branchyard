@@ -154,7 +154,45 @@ struct ChangesPanel: View {
             model.copyToPasteboard(changes.map(\.path).joined(separator: "\n"),
                                    what: many ? "\(changes.count) paths" : changes[0].path)
         })
+        let ignorable = changes.filter { $0.area != .conflicted && $0.kind != .deleted }
+        if !ignorable.isEmpty {
+            items.append(.divider)
+            items.append(ignoreMenu(for: ignorable))
+        }
         return items
+    }
+
+    /// "Ignore ▸" with the file, its extension and its folder. Tracked files are also
+    /// removed from the index (kept on disk), or the ignore rule would do nothing.
+    private func ignoreMenu(for changes: [FileChange]) -> RowMenuItem {
+        let tracked = changes.contains { $0.kind != .untracked }
+        let untrack: ([String]) -> [String] = { paths in tracked ? paths : [] }
+        let verb = tracked ? "Stop Tracking and Ignore" : "Ignore"
+        var entries: [RowMenuItem] = []
+        if changes.count > 1 {
+            let paths = changes.map(\.path)
+            entries.append(.action("\(verb) \(changes.count) Files") {
+                model.ignore(paths.map { "/" + $0 }, untrack: untrack(paths))
+            })
+        } else if let change = changes.first {
+            entries.append(.action("\(verb) “\(change.fileName)”") {
+                model.ignore(["/" + change.path], untrack: untrack([change.path]))
+            })
+            let ext = (change.fileName as NSString).pathExtension
+            if !ext.isEmpty {
+                // Untracks only this file: other tracked *.ext files are your call.
+                entries.append(.action("\(verb) All “*.\(ext)” Files") {
+                    model.ignore(["*.\(ext)"], untrack: untrack([change.path]))
+                })
+            }
+            if !change.directory.isEmpty {
+                let dir = change.directory
+                entries.append(.action("\(verb) Folder “\(dir)/”") {
+                    model.ignore(["/\(dir)/"], untrack: untrack([dir]))
+                })
+            }
+        }
+        return .submenu("Ignore", entries)
     }
 }
 
@@ -210,10 +248,12 @@ private struct CommitBox: View {
     @ObservedObject private var profiles = ProfileStore.shared
     @AppStorage("commit.pushAfter") private var pushAfter = false
     @AppStorage("commit.optionsOpen") private var optionsOpen = false
+    @FocusState private var messageFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             TextEditor(text: $model.commitMessage)
+                .focused($messageFocused)
                 .font(.system(.body, design: .default))
                 .scrollContentBackground(.hidden)
                 .padding(4)
@@ -266,8 +306,8 @@ private struct CommitBox: View {
                         .font(.system(size: 9, weight: .bold))
                         .rotationEffect(.degrees(optionsOpen ? 90 : 0))
                     Text("Commit options")
-                    if pushAfter && !optionsOpen {
-                        Text("· push after committing").foregroundStyle(.tertiary)
+                    if !optionsOpen, !activeOptions.isEmpty {
+                        Text("· " + activeOptions.joined(separator: ", ")).foregroundStyle(.tertiary)
                     }
                 }
                 .font(.caption)
@@ -276,22 +316,44 @@ private struct CommitBox: View {
             }
             .buttonStyle(.plain)
             if optionsOpen {
-                Toggle("Push after committing", isOn: $pushAfter)
-                    .toggleStyle(.checkbox)
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Amend previous commit", isOn: $model.amend)
+                        .help("Replace the last commit with this message and the staged files")
+                        .disabled(model.opState != .none)
+                    Toggle("Push after committing", isOn: $pushAfter)
+                        .help("Push the branch as soon as the commit is made")
+                }
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                .padding(.leading, 14)
+            }
+            if model.amendRewritesPushed {
+                Label("This commit is already pushed. Amending it means a force push.",
+                      systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
+                    .foregroundStyle(.orange)
                     .padding(.leading, 14)
-                    .help("Push the branch as soon as the commit is made")
             }
         }
+        .onChange(of: model.amend) { _, on in if on { messageFocused = true } }
+    }
+
+    private var activeOptions: [String] {
+        (model.amend ? ["amend"] : []) + (pushAfter ? ["push after committing"] : [])
     }
 
     private var commitTitle: String {
-        let what = model.opState == .merging ? "Merge" : "\(model.status.staged.count) file(s)"
-        return pushAfter ? "Commit \(what) and Push" : "Commit \(what)"
+        let verb = model.amend ? "Amend" : "Commit"
+        let what: String
+        if model.opState == .merging { what = "Merge" }
+        else if model.amend { what = model.status.staged.isEmpty ? "Message" : "with \(model.status.staged.count) file(s)" }
+        else { what = "\(model.status.staged.count) file(s)" }
+        return pushAfter ? "\(verb) \(what) and Push" : "\(verb) \(what)"
     }
 
     private var hint: String {
         if !model.status.conflicted.isEmpty { return "Resolve conflicts first" }
+        if model.amend { return "⌘↩ to amend" }
         if model.status.staged.isEmpty && model.opState != .merging { return "Stage files to commit" }
         return "⌘↩ to commit"
     }
