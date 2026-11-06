@@ -145,6 +145,10 @@ struct ChangesPanel: View {
                 items.append(.action("Mark Resolved as Is") { model.markResolvedAsIs(change) })
             }
             items.append(.divider)
+            if change.kind != .untracked && change.kind != .added {
+                items.append(.action("File History") { model.inspectFile(change.path, mode: .history) })
+                items.append(.action("Blame") { model.inspectFile(change.path, mode: .blame) })
+            }
             items.append(.action("Open") { model.openInDefaultApp(change.path) })
             items.append(.action("Reveal in Finder") { model.revealInFinder(change.path) })
         } else {

@@ -138,7 +138,9 @@ struct CommitDetailPanel: View {
             Divider()
             List(selection: $model.selectedCommitFileID) {
                 ForEach(detail.files) { file in
-                    CommitFileRow(file: file).tag(file.id)
+                    CommitFileRow(file: file)
+                        .tag(file.id)
+                        .background(RowMenu { fileMenu(file, in: detail.commit) })
                 }
             }
             .listStyle(.inset)
@@ -149,6 +151,24 @@ struct CommitDetailPanel: View {
             }
         }
         .frame(maxHeight: .infinity)
+    }
+}
+
+extension CommitDetailPanel {
+    func fileMenu(_ file: CommitFile, in commit: Commit) -> [RowMenuItem] {
+        var items: [RowMenuItem] = [
+            .action("File History") { model.inspectFile(file.path, mode: .history, at: commit.sha) },
+        ]
+        if file.kind != .deleted {
+            items.append(.action("Blame at This Commit") {
+                model.inspectFile(file.path, mode: .blame, at: commit.sha, blameAt: commit.sha)
+            })
+        }
+        items += [
+            .divider,
+            .action("Copy File Path") { model.copyToPasteboard(file.path, what: "File path") },
+        ]
+        return items
     }
 }
 

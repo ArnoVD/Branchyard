@@ -9,6 +9,7 @@ import AppKit
 /// - `BRANCHYARD_SHEET=tag|rename|upstream` opens that sheet (HEAD / current branch) after 1.5 s.
 /// - `BRANCHYARD_SEARCH=<text>` opens commit search with that text after 1.5 s.
 /// - `BRANCHYARD_PALETTE=<text>` opens the command palette with that text typed after 1.5 s.
+/// - `BRANCHYARD_FILE=<path>[:blame]` opens File History (or Blame) of that file after 1.5 s.
 /// - `BRANCHYARD_RIGHTCLICK=<x>,<y>` (window points, from the top left) sends a right-click there
 ///   after 4 s, logs any menu that opens with its screen frame, then quits.
 enum DebugHooks {
@@ -47,6 +48,13 @@ enum DebugHooks {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 PaletteDebug.query = query
                 state.selectedTab?.showPalette = true
+            }
+        }
+        if let spec = env["BRANCHYARD_FILE"] {
+            let blame = spec.hasSuffix(":blame")
+            let path = blame ? String(spec.dropLast(6)) : spec
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                state.selectedTab?.inspectFile(path, mode: blame ? .blame : .history)
             }
         }
         if let message = env["BRANCHYARD_COMMIT"] {

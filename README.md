@@ -46,6 +46,10 @@ The Pull button's dropdown switches the mode too.
 - **Hunks and lines:** in a file's diff (Hunk or Inline View), use Stage Hunk / Discard Hunk /
   Unstage Hunk on each `@@` row, or click line numbers to pick lines (Shift-click for a range)
   and use Stage Lines / Discard Lines. Discards can be undone with Undo.
+- **File history & blame:** right-click a file → File History or Blame (also the clock and
+  person buttons above a diff). History lists every commit that changed the file, following
+  renames, with each change; Blame shows who last changed each line. Click a blame line to
+  jump to that change; right-click a commit to blame the file as it was then.
 - **Amend:** Commit options → "Amend previous commit" rewrites the last commit with the
   staged files and the edited message.
 - **Force push:** when the remote has commits you don't have, Push offers Force Push

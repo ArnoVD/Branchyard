@@ -7,7 +7,9 @@ struct DetailPanel: View {
 
     var body: some View {
         Group {
-            if let change = model.selectedChange {
+            if let inspector = model.fileInspector {
+                FileInspectorView(model: model, inspector: inspector)
+            } else if let change = model.selectedChange {
                 VStack(spacing: 0) {
                     DetailHeader(model: model, change: change)
                     Divider()
@@ -45,7 +47,7 @@ struct DetailPanel: View {
 }
 
 /// "‹ Graph" button shown above any diff; Esc does the same.
-private struct BackToGraphButton: View {
+struct BackToGraphButton: View {
     @ObservedObject var model: RepoModel
 
     var body: some View {
@@ -76,10 +78,37 @@ private struct CommitFileHeader: View {
             Text("in \(commit.shortSHA)")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary)
+            InspectButtons(model: model, path: file.path, commit: commit.sha, canBlame: file.kind != .deleted)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color.byPanel)
+    }
+}
+
+/// History and Blame buttons in a diff header.
+private struct InspectButtons: View {
+    @ObservedObject var model: RepoModel
+    let path: String
+    let commit: String?
+    let canBlame: Bool
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Button {
+                model.inspectFile(path, mode: .history, at: commit)
+            } label: {
+                Image(systemName: FileInspector.Mode.history.icon)
+            }
+            .help("File History")
+            Button {
+                model.inspectFile(path, mode: .blame, at: commit, blameAt: commit)
+            } label: {
+                Image(systemName: FileInspector.Mode.blame.icon)
+            }
+            .help(commit == nil ? "Blame" : "Blame at This Commit")
+            .disabled(!canBlame)
+        }
     }
 }
 
@@ -102,6 +131,9 @@ private struct DetailHeader: View {
                 Button("Unstage File") { model.unstage([change]) }
             case .conflicted:
                 EmptyView()
+            }
+            if change.kind != .untracked && change.kind != .added {
+                InspectButtons(model: model, path: change.path, commit: nil, canBlame: true)
             }
             Button {
                 model.openInDefaultApp(change.path)
