@@ -54,8 +54,11 @@ final class RepoModel: ObservableObject, Identifiable {
     /// Bottom-left notifications after toolbar actions.
     @Published var toasts: [Toast] = []
     /// Set by an operation to replace its toast's default detail line, or the whole toast.
+    private var toastTitle: String?
     private var toastDetail: String?
     private var toastOverride: Toast?
+    /// Local commits a push would send: `ahead` with an upstream, else commits no remote has yet.
+    @Published var unpushed = 0
     /// Last long-running operation, for the status bar.
     @Published var lastActivity: Activity?
     /// When `git fetch` last ran (FETCH_HEAD's date), by us or anything else.
@@ -137,6 +140,9 @@ final class RepoModel: ObservableObject, Identifiable {
             let (newStatus, newBranches, newStashes, newOp, newLog, newTags) = try await (s, b, st, op, lg, tg)
             if tags != newTags { tags = newTags }
             if status != newStatus { status = newStatus }
+            let pending = newStatus.upstream != nil ? newStatus.ahead
+                : (newStatus.branch == nil ? 0 : await repo.unpushedCount())
+            if unpushed != pending { unpushed = pending }
             if branches != newBranches { branches = newBranches }
             if stashes != newStashes { stashes = newStashes }
             opState = newOp
@@ -232,9 +238,10 @@ final class RepoModel: ObservableObject, Identifiable {
         branches.first { $0.isRemote == remote && $0.name == name }
     }
 
-    func copyToPasteboard(_ text: String) {
+    func copyToPasteboard(_ text: String, what: String = "Text") {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+        showToast(Toast(title: "Copied to Clipboard", detail: what, kind: .info))
     }
 
     func loadDetail() async {
@@ -286,27 +293,33 @@ final class RepoModel: ObservableObject, Identifiable {
 
     // MARK: running operations
 
-    /// Long-running, one at a time (network ops, commit…). Shows a spinner with `label`.
-    /// `action`: the toolbar button to spin, and to confirm with a toast when it succeeds.
+    /// Long-running, one at a time (network ops, commit…). Shows a spinner with `label`
+    /// and a toast when it succeeds. `action`: the toolbar button to spin.
+    /// `then` runs after a success, once the status is refreshed (commit → push).
     private func run(_ label: String, on action: ToolAction? = nil,
+                     then: (@MainActor () -> Void)? = nil,
                      _ operation: @escaping @MainActor () async throws -> Void) {
         guard busy == nil else { return }
         busy = label
         busyAction = action
         notice = nil
+        toastTitle = nil
         toastDetail = nil
         toastOverride = nil
         Task {
             var ok = true
             do { try await operation() } catch { ok = false; errorMessage = error.localizedDescription }
-            lastActivity = Activity(label: label, succeeded: ok, date: Date())
+            let activity = Activity(label: label, succeeded: ok, date: Date())
+            lastActivity = activity
             busy = nil
             busyAction = nil
             // Conflicts show the banner instead.
-            if ok, notice == nil, let action {
-                showToast(toastOverride ?? Toast(title: action.successTitle, detail: toastDetail))
+            if ok, notice == nil {
+                showToast(toastOverride ?? Toast(title: toastTitle ?? action?.successTitle ?? activity.text,
+                                                 detail: toastDetail))
             }
             await refresh()
+            if ok, notice == nil { then?() }
         }
     }
 
@@ -337,8 +350,9 @@ final class RepoModel: ObservableObject, Identifiable {
 
     /// Like `run`, but the operation returns how to undo it.
     private func runUndoable(_ label: String, on action: ToolAction? = nil,
+                             then: (@MainActor () -> Void)? = nil,
                              _ operation: @escaping @MainActor () async throws -> UndoStep?) {
-        run(label, on: action) {
+        run(label, on: action, then: then) {
             if let step = try await operation() {
                 self.undoStack.append(step)
                 if self.undoStack.count > 50 { self.undoStack.removeFirst() }
@@ -421,12 +435,20 @@ final class RepoModel: ObservableObject, Identifiable {
         }
     }
 
-    /// Quick local ops (stage/unstage) that may overlap.
-    private func quick(_ operation: @escaping @MainActor () async throws -> Void) {
+    /// Quick local ops (stage/unstage) that may overlap. `done` is the success toast.
+    private func quick(_ done: Toast, _ operation: @escaping @MainActor () async throws -> Void) {
         Task {
-            do { try await operation() } catch { errorMessage = error.localizedDescription }
+            do {
+                try await operation()
+                showToast(done)
+            } catch { errorMessage = error.localizedDescription }
             await refresh()
         }
+    }
+
+    /// "a.txt" or "3 files".
+    private func describe(_ changes: [FileChange]) -> String {
+        changes.count == 1 ? changes[0].fileName : "\(changes.count) files"
     }
 
     /// For pull / merge / stash pop: conflicts are expected, not an error.
@@ -533,15 +555,23 @@ final class RepoModel: ObservableObject, Identifiable {
 
     // MARK: staging
 
-    func stage(_ changes: [FileChange]) { quick { try await self.repo.stage(changes.map(\.path)) } }
-    func unstage(_ changes: [FileChange]) { quick { try await self.repo.unstage(changes.map(\.path)) } }
+    func stage(_ changes: [FileChange]) {
+        guard !changes.isEmpty else { return }
+        quick(Toast(title: "Staged", detail: describe(changes))) { try await self.repo.stage(changes.map(\.path)) }
+    }
+    func unstage(_ changes: [FileChange]) {
+        guard !changes.isEmpty else { return }
+        quick(Toast(title: "Unstaged", detail: describe(changes))) { try await self.repo.unstage(changes.map(\.path)) }
+    }
     func stageAll() { stage(status.unstaged) }
     func unstageAll() { unstage(status.staged) }
     func discard(_ changes: [FileChange]) {
         let changes = changes.filter { $0.area == .unstaged }
         guard !changes.isEmpty else { return }
-        let label = changes.count == 1 ? changes[0].fileName : "\(changes.count) files"
+        let label = describe(changes)
         runUndoable("Discarding \(label)…") {
+            self.toastTitle = changes.allSatisfy { $0.kind == .untracked } ? "Files Deleted" : "Changes Discarded"
+            self.toastDetail = "\(label) · ⌘Z to undo"
             var saved: [DiscardedFile] = []
             for change in changes {
                 var data: Data?
@@ -567,15 +597,22 @@ final class RepoModel: ObservableObject, Identifiable {
         }
     }
 
-    func commit() {
+    /// `andPush`: the "Push after committing" option; pushes once the commit is in.
+    func commit(andPush: Bool = false) {
         guard canCommit else { return }
         let message = commitMessage
-        runUndoable("Committing…") {
+        var pushAfter: (@MainActor () -> Void)?
+        if andPush { pushAfter = { self.push() } }
+        runUndoable("Committing…", then: pushAfter) {
             let parent = await self.repo.headSHA()
             try await self.repo.commit(message: message)
             self.commitMessage = ""
+            let subject: String = message.split(separator: "\n").first.map { String($0) } ?? ""
+            let head: String? = await self.repo.headSHA()
+            self.toastTitle = "Committed"
+            self.toastDetail = head.map { "\($0.prefix(7)) · \(subject)" } ?? subject
             // A first commit has no parent to go back to.
-            guard let parent, let sha = await self.repo.headSHA() else { return nil }
+            guard let parent, let sha = head else { return nil }
             return .commit(sha: sha, parent: parent, message: message)
         }
     }
@@ -594,6 +631,8 @@ final class RepoModel: ObservableObject, Identifiable {
     func pop(_ stash: Stash? = nil) {
         forgetUndo()
         run("Popping stash…", on: stash == nil ? .pop : nil) {
+            self.toastTitle = "Stash Popped"
+            self.toastDetail = stash?.message
             let result = try await self.repo.stashPop(stash?.ref)
             try await self.handleMayConflict(result, what: "Stash pop")
         }
@@ -602,12 +641,20 @@ final class RepoModel: ObservableObject, Identifiable {
     func apply(_ stash: Stash) {
         forgetUndo()
         run("Applying stash…") {
+            self.toastTitle = "Stash Applied"
+            self.toastDetail = stash.message
             let result = try await self.repo.stashApply(stash.ref)
             try await self.handleMayConflict(result, what: "Stash apply")
         }
     }
 
-    func drop(_ stash: Stash) { run("Dropping stash…") { try await self.repo.stashDrop(stash.ref) } }
+    func drop(_ stash: Stash) {
+        run("Dropping stash…") {
+            self.toastTitle = "Stash Dropped"
+            self.toastDetail = stash.message
+            try await self.repo.stashDrop(stash.ref)
+        }
+    }
 
     // MARK: branches
 
@@ -624,6 +671,8 @@ final class RepoModel: ObservableObject, Identifiable {
     func checkout(_ branch: Branch) {
         guard !branch.isCurrent else { return }
         runUndoable("Switching to \(branch.nameWithoutRemote)…") {
+            self.toastTitle = "Checked Out"
+            self.toastDetail = "Switched to \(branch.nameWithoutRemote)"
             let from = await self.repo.headRef()
             try await self.repo.checkout(branch, existingLocal: self.localBranches)
             guard let from, let to = await self.repo.headRef() else { return nil }
@@ -633,6 +682,8 @@ final class RepoModel: ObservableObject, Identifiable {
 
     func deleteBranch(_ branch: Branch, force: Bool) {
         runUndoable("Deleting branch…") {
+            self.toastTitle = "Branch Deleted"
+            self.toastDetail = "\(branch.name) · ⌘Z to undo"
             let sha = await self.repo.sha(of: "refs/heads/\(branch.name)")
             try await self.repo.deleteBranch(branch.name, force: force)
             return sha.map { .deleteBranch(name: branch.name, sha: $0) }
@@ -641,7 +692,10 @@ final class RepoModel: ObservableObject, Identifiable {
 
     func merge(_ branch: Branch) {
         forgetUndo()
+        let target = status.branch ?? "HEAD"
         run("Merging \(branch.name)…") {
+            self.toastTitle = "Merged"
+            self.toastDetail = "\(branch.name) into \(target)"
             let result = try await self.repo.merge(branch.name)
             try await self.handleMayConflict(result, what: "Merge")
         }
@@ -652,6 +706,8 @@ final class RepoModel: ObservableObject, Identifiable {
     func saveResolution(for change: FileChange) {
         guard let conflict, let text = conflict.resolved(with: conflictChoices) else { return }
         run("Saving resolution…") {
+            self.toastTitle = "Resolution Saved"
+            self.toastDetail = change.path
             try await self.repo.writeResolved(path: change.path, contents: text)
             self.selectNextConflict(after: change)
         }
@@ -659,6 +715,8 @@ final class RepoModel: ObservableObject, Identifiable {
 
     func takeWholeFile(_ change: FileChange, side: Repository.Side) {
         run("Resolving…") {
+            self.toastTitle = "Conflict Resolved"
+            self.toastDetail = "Used \(side == .ours ? "ours" : "theirs") for \(change.fileName)"
             try await self.repo.resolveWholeFile(change, side: side)
             self.selectNextConflict(after: change)
         }
@@ -667,6 +725,8 @@ final class RepoModel: ObservableObject, Identifiable {
     /// For conflicts edited by hand in an editor: stage the file as it is now.
     func markResolvedAsIs(_ change: FileChange) {
         run("Marking resolved…") {
+            self.toastTitle = "Marked Resolved"
+            self.toastDetail = change.path
             try await self.repo.stage([change.path])
             self.selectNextConflict(after: change)
         }
@@ -678,8 +738,22 @@ final class RepoModel: ObservableObject, Identifiable {
         conflictChoices = [:]
     }
 
-    func abortOperation() { forgetUndo(); run("Aborting…") { try await self.repo.abort(self.opState) } }
-    func continueOperation() { forgetUndo(); run("Continuing…") { try await self.repo.continueOperation(self.opState) } }
+    func abortOperation() {
+        forgetUndo()
+        let op = opState
+        run("Aborting…") {
+            self.toastTitle = "\(op.name) Aborted"
+            try await self.repo.abort(op)
+        }
+    }
+    func continueOperation() {
+        forgetUndo()
+        let op = opState
+        run("Continuing…") {
+            self.toastTitle = "\(op.name) Continued"
+            try await self.repo.continueOperation(op)
+        }
+    }
 
     // MARK: Finder / Terminal
 
@@ -700,6 +774,17 @@ final class RepoModel: ObservableObject, Identifiable {
 }
 
 /// Toolbar buttons that run a git operation.
+private extension OperationState {
+    var name: String {
+        switch self {
+        case .none: "Operation"
+        case .merging: "Merge"
+        case .rebasing: "Rebase"
+        case .cherryPicking: "Cherry-pick"
+        }
+    }
+}
+
 enum ToolAction {
     case undo, redo, fetch, pull, push, branch, stash, pop
 

@@ -178,8 +178,8 @@ private struct CommitRowView: View {
         if !commit.isWIP {
             Button("Create Branch Here…") { model.newBranchRequest = NewBranchRequest(startPoint: commit.sha) }
             Divider()
-            Button("Copy Commit SHA") { model.copyToPasteboard(commit.sha) }
-            Button("Copy Commit Message") { model.copyToPasteboard(commit.subject) }
+            Button("Copy Commit SHA") { model.copyToPasteboard(commit.sha, what: "Commit SHA \(commit.sha.prefix(7))") }
+            Button("Copy Commit Message") { model.copyToPasteboard(commit.subject, what: "Commit message") }
         }
     }
 
@@ -386,6 +386,6 @@ private struct RefLabels: View {
                 model.newBranchRequest = NewBranchRequest(startPoint: branch.name)
             }
         }
-        Button("Copy Name") { model.copyToPasteboard(label.name) }
+        Button("Copy Name") { model.copyToPasteboard(label.name, what: label.name) }
     }
 }

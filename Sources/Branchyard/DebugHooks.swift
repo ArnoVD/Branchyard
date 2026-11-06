@@ -3,6 +3,8 @@ import AppKit
 /// Test hooks driven by environment variables, for checks without touching the real mouse:
 /// - `BRANCHYARD_OPEN=<repo path>` opens that repository in a tab.
 /// - `BRANCHYARD_SELECT_FIRST_FILE=1` opens the diff of the first changed file.
+/// - `BRANCHYARD_COMMIT=<message>` commits what's staged after 1.5 s, pushing too when
+///   "Push after committing" is on.
 /// - `BRANCHYARD_RIGHTCLICK=<x>,<y>` (window points, from the top left) sends a right-click there
 ///   after 4 s, logs any menu that opens with its screen frame, then quits.
 enum DebugHooks {
@@ -14,6 +16,13 @@ enum DebugHooks {
             // Opens the diff of the first changed file once the repository has loaded.
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 state.selectedTab?.selectedChangeID = state.selectedTab?.status.allChanges.first?.id
+            }
+        }
+        if let message = env["BRANCHYARD_COMMIT"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                guard let tab = state.selectedTab else { return }
+                tab.commitMessage = message
+                tab.commit(andPush: UserDefaults.standard.bool(forKey: "commit.pushAfter"))
             }
         }
         if let spec = env["BRANCHYARD_DRAG"] { drag(spec) }

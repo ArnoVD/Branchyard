@@ -42,7 +42,7 @@ struct CommitDetailPanel: View {
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 .textSelection(.enabled)
             Button {
-                model.copyToPasteboard(commit.sha)
+                model.copyToPasteboard(commit.sha, what: "Commit SHA \(commit.shortSHA)")
             } label: {
                 Image(systemName: "doc.on.doc")
             }

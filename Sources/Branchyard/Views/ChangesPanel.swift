@@ -151,8 +151,8 @@ struct ChangesPanel: View {
             items.append(.divider)
         }
         items.append(.action(many ? "Copy \(changes.count) Paths" : "Copy Path") {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(changes.map(\.path).joined(separator: "\n"), forType: .string)
+            model.copyToPasteboard(changes.map(\.path).joined(separator: "\n"),
+                                   what: many ? "\(changes.count) paths" : changes[0].path)
         })
         return items
     }
@@ -208,6 +208,8 @@ private struct FileRow: View {
 private struct CommitBox: View {
     @ObservedObject var model: RepoModel
     @ObservedObject private var profiles = ProfileStore.shared
+    @AppStorage("commit.pushAfter") private var pushAfter = false
+    @AppStorage("commit.optionsOpen") private var optionsOpen = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -236,13 +238,14 @@ private struct CommitBox: View {
             }
             .help(folder.map { "Profile \(profile.name), automatic for \(($0 as NSString).abbreviatingWithTildeInPath)" }
                   ?? "Commit author from profile \(profile.name)")
+            options
             HStack {
                 Text(hint).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button {
-                    model.commit()
+                    model.commit(andPush: pushAfter)
                 } label: {
-                    Text(model.opState == .merging ? "Commit Merge" : "Commit \(model.status.staged.count) file(s)")
+                    Text(commitTitle)
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.return, modifiers: .command)
@@ -250,6 +253,41 @@ private struct CommitBox: View {
             }
         }
         .padding(10)
+    }
+
+    /// "˅ Commit options" with "☐ Push after committing" under it.
+    private var options: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { optionsOpen.toggle() }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .rotationEffect(.degrees(optionsOpen ? 90 : 0))
+                    Text("Commit options")
+                    if pushAfter && !optionsOpen {
+                        Text("· push after committing").foregroundStyle(.tertiary)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if optionsOpen {
+                Toggle("Push after committing", isOn: $pushAfter)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+                    .padding(.leading, 14)
+                    .help("Push the branch as soon as the commit is made")
+            }
+        }
+    }
+
+    private var commitTitle: String {
+        let what = model.opState == .merging ? "Merge" : "\(model.status.staged.count) file(s)"
+        return pushAfter ? "Commit \(what) and Push" : "Commit \(what)"
     }
 
     private var hint: String {

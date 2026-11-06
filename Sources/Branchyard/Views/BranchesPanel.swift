@@ -283,7 +283,7 @@ struct BranchesPanel: View {
                 model.newBranchRequest = NewBranchRequest(startPoint: branch.name)
             })
             items.append(.divider)
-            items.append(.action("Copy Name") { model.copyToPasteboard(branch.nameWithoutRemote) })
+            items.append(.action("Copy Name") { model.copyToPasteboard(branch.nameWithoutRemote, what: branch.nameWithoutRemote) })
             if !branch.isRemote && !branch.isCurrent {
                 items.append(.divider)
                 items.append(.action("Delete \(branch.name)…") { branchToDelete = branch })
@@ -301,7 +301,7 @@ struct BranchesPanel: View {
                 .action("New Branch from \(tag.name)…") {
                     model.newBranchRequest = NewBranchRequest(startPoint: tag.name)
                 },
-                .action("Copy Name") { model.copyToPasteboard(tag.name) },
+                .action("Copy Name") { model.copyToPasteboard(tag.name, what: tag.name) },
             ]
         }
         return []

@@ -210,7 +210,8 @@ private struct ActionBar: View {
                     .disabled(model.busy != nil)
                     .help("Fetch or pull")
                 }
-                tool("Push", "arrow.up.to.line", .push, badge: model.status.ahead) { model.push() }
+                tool("Push", "arrow.up.to.line", .push, badge: model.unpushed, highlight: model.unpushed > 0,
+                     help: pushHelp) { model.push() }
                 tool("Branch", "arrow.triangle.branch", .branch) { model.newBranchRequest = NewBranchRequest(startPoint: nil) }
                 tool("Stash", "tray.and.arrow.down", .stash) { model.stash() }
                     .disabled(model.status.isClean && model.busyAction != .stash)
@@ -257,10 +258,20 @@ private struct ActionBar: View {
 
     /// A toolbar button for a git operation: spins while its operation runs, locked while another does.
     private func tool(_ title: String, _ icon: String, _ action: ToolAction, also: ToolAction? = nil,
-                      badge: Int = 0, help: String? = nil, perform: @escaping () -> Void) -> some View {
+                      badge: Int = 0, highlight: Bool = false, help: String? = nil,
+                      perform: @escaping () -> Void) -> some View {
         let running = model.busyAction != nil && (model.busyAction == action || model.busyAction == also)
-        return ToolButton(title, icon, badge: running ? 0 : badge, help: help, running: running, action: perform)
+        return ToolButton(title, icon, badge: running ? 0 : badge, highlight: highlight && !running,
+                          help: help, running: running, action: perform)
             .disabled(model.busy != nil && !running)
+    }
+
+    private var pushHelp: String {
+        let n = model.unpushed
+        guard n > 0 else { return "Push" }
+        let commits = "\(n) commit\(n == 1 ? "" : "s")"
+        return model.status.upstream.map { "\(commits) waiting to be pushed to \($0)" }
+            ?? "\(commits) not on any remote yet. Push to publish \(model.status.branch ?? "this branch")"
     }
 
     private var repoMenu: some View {
@@ -334,15 +345,18 @@ private struct ToolButton: View {
     let title: String
     let icon: String
     let badge: Int
+    /// Something is waiting for this button (unpushed commits): tint it and ring it.
+    let highlight: Bool
     let helpText: String?
     let running: Bool
     let action: () -> Void
 
-    init(_ title: String, _ icon: String, badge: Int = 0, help: String? = nil, running: Bool = false,
-         action: @escaping () -> Void) {
+    init(_ title: String, _ icon: String, badge: Int = 0, highlight: Bool = false, help: String? = nil,
+         running: Bool = false, action: @escaping () -> Void) {
         self.title = title
         self.icon = icon
         self.badge = badge
+        self.highlight = highlight
         self.helpText = help
         self.running = running
         self.action = action
@@ -353,10 +367,11 @@ private struct ToolButton: View {
             // Label above the icon.
             VStack(spacing: 3) {
                 Text(title)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 11, weight: highlight ? .semibold : .regular))
+                    .foregroundStyle(highlight ? AnyShapeStyle(Color.byAccent) : AnyShapeStyle(.secondary))
                 Image(systemName: icon)
                     .font(.system(size: 16))
+                    .foregroundStyle(highlight ? AnyShapeStyle(Color.byAccent) : AnyShapeStyle(.primary))
                     .frame(height: 18)
                     // While running, a spinner takes the icon's place.
                     .opacity(running ? 0 : 1)
@@ -381,6 +396,15 @@ private struct ToolButton: View {
                     }
             }
             .frame(minWidth: 42)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background {
+                if highlight {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.byAccent.opacity(0.12))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.byAccent.opacity(0.45)))
+                }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)

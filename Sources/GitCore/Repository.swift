@@ -351,6 +351,13 @@ extension Repository {
         return Int(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    /// Commits on HEAD that no remote-tracking branch has yet: what a push would send.
+    public func unpushedCount() async -> Int {
+        guard let r = try? await git.run(["rev-list", "--count", "HEAD", "--not", "--remotes"], allowFailure: true),
+              r.succeeded else { return 0 }
+        return Int(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
     public func headRef() async -> HeadRef? {
         if let r = try? await git.run(["symbolic-ref", "--short", "-q", "HEAD"], allowFailure: true), r.succeeded {
             let name = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
