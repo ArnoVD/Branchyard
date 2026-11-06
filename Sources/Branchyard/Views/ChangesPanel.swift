@@ -5,23 +5,21 @@ import GitCore
 /// (drag the divider to resize), and the commit box at the bottom.
 struct ChangesPanel: View {
     @ObservedObject var model: RepoModel
-    @ViewState private var toDiscard: FileChange?
+    @ViewState private var toDiscard: [FileChange] = []
 
     var body: some View {
         VStack(spacing: 0) {
             VSplitView {
                 section(
                     title: model.status.conflicted.isEmpty ? "Unstaged Files" : "Unstaged & Conflicts",
-                    count: model.status.unstaged.count + model.status.conflicted.count,
-                    action: model.status.unstaged.isEmpty ? nil : ("Stage All", { model.stageAll() }),
                     files: model.status.conflicted + model.status.unstaged,
+                    all: ("Stage", model.status.unstaged, { model.stage($0) }),
                     empty: model.loaded && model.status.isClean ? "Working tree clean" : "No unstaged changes"
                 )
                 section(
                     title: "Staged Files",
-                    count: model.status.staged.count,
-                    action: model.status.staged.isEmpty ? nil : ("Unstage All", { model.unstageAll() }),
                     files: model.status.staged,
+                    all: ("Unstage", model.status.staged, { model.unstage($0) }),
                     empty: "Nothing staged yet"
                 )
             }
@@ -32,33 +30,60 @@ struct ChangesPanel: View {
         }
         .frame(maxHeight: .infinity)
         .confirmationDialog(
-            "Discard changes to \(toDiscard?.fileName ?? "")?",
-            isPresented: Binding(get: { toDiscard != nil }, set: { if !$0 { toDiscard = nil } }),
+            discardTitle,
+            isPresented: Binding(get: { !toDiscard.isEmpty }, set: { if !$0 { toDiscard = [] } }),
             presenting: toDiscard
-        ) { change in
-            Button(change.kind == .untracked ? "Delete File" : "Discard Changes", role: .destructive) {
-                model.discard(change)
+        ) { changes in
+            Button(changes.allSatisfy { $0.kind == .untracked } ? "Delete" : "Discard", role: .destructive) {
+                model.discard(changes)
             }
-        } message: { change in
-            Text(change.kind == .untracked
-                 ? "This untracked file will be deleted. This can't be undone."
-                 : "Your unstaged edits to this file will be lost. This can't be undone.")
+        } message: { changes in
+            Text(discardMessage(changes))
         }
     }
 
-    private func section(title: String, count: Int, action: (String, () -> Void)?,
-                         files: [FileChange], empty: String) -> some View {
-        VStack(spacing: 0) {
+    private var discardTitle: String {
+        guard let first = toDiscard.first else { return "" }
+        let what = toDiscard.count == 1 ? first.fileName : "\(toDiscard.count) files"
+        return toDiscard.allSatisfy { $0.kind == .untracked } ? "Delete \(what)?" : "Discard changes to \(what)?"
+    }
+
+    private func discardMessage(_ changes: [FileChange]) -> String {
+        let untracked = changes.filter { $0.kind == .untracked }.count
+        let tracked = changes.count - untracked
+        var parts: [String] = []
+        if tracked > 0 { parts.append(tracked == 1 && changes.count == 1 ? "Your unstaged edits will be lost." : "Unstaged edits to \(tracked) file(s) will be lost.") }
+        if untracked > 0 { parts.append(untracked == 1 && changes.count == 1 ? "This untracked file will be deleted." : "\(untracked) untracked file(s) will be deleted.") }
+        return parts.joined(separator: " ") + " Undo (⌘Z) can bring them back."
+    }
+
+    /// Selection limited to this list: clicking in one list clears the other.
+    private func selection(in files: [FileChange]) -> Binding<Set<String>> {
+        let ids = Set(files.map(\.id))
+        return Binding(
+            get: { model.selectedChangeIDs.intersection(ids) },
+            set: { model.setChangeSelection($0.intersection(ids)) }
+        )
+    }
+
+    private func section(title: String, files: [FileChange],
+                         all: (verb: String, files: [FileChange], run: ([FileChange]) -> Void),
+                         empty: String) -> some View {
+        let picked = files.filter { model.selectedChangeIDs.contains($0.id) && $0.area != .conflicted }
+        return VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Text(title).font(.subheadline.weight(.semibold))
-                Text("\(count)")
+                Text("\(files.count)")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 6)
                     .background(Capsule().fill(Color.secondary.opacity(0.15)))
                 Spacer()
-                if let action {
-                    Button(action.0, action: action.1)
+                if picked.count > 1 {
+                    Button("\(all.verb) \(picked.count) Selected") { all.run(picked) }
+                        .controlSize(.small)
+                } else if !all.files.isEmpty {
+                    Button("\(all.verb) All") { all.run(all.files) }
                         .controlSize(.small)
                 }
             }
@@ -66,10 +91,26 @@ struct ChangesPanel: View {
             .frame(height: 32)
             .background(Color.byPanel)
             Divider()
-            List(selection: $model.selectedChangeID) {
-                ForEach(files) { row($0) }
+            List(selection: selection(in: files)) {
+                ForEach(files) { change in
+                    FileRow(change: change) { model.toggleStage(change) }
+                        .tag(change.id)
+                }
             }
             .listStyle(.inset)
+            .contextMenu(forSelectionType: String.self) { ids in
+                menu(for: files.filter { ids.contains($0.id) })
+            }
+            .onDeleteCommand {
+                let unstaged = model.selectedChanges.filter { $0.area == .unstaged }
+                if !unstaged.isEmpty { toDiscard = unstaged }
+            }
+            .onKeyPress(.space) {
+                let changes = model.selectedChanges.filter { $0.area != .conflicted }
+                guard !changes.isEmpty else { return .ignored }
+                if changes[0].area == .staged { model.unstage(changes) } else { model.stage(changes) }
+                return .handled
+            }
             .overlay {
                 if files.isEmpty {
                     Text(empty).foregroundStyle(.tertiary)
@@ -79,29 +120,39 @@ struct ChangesPanel: View {
         .frame(minHeight: 120, maxHeight: .infinity)
     }
 
-    private func row(_ change: FileChange) -> some View {
-        FileRow(change: change) { model.toggleStage(change) }
-            .tag(change.id)
-            .contextMenu {
-                switch change.area {
-                case .unstaged:
-                    Button("Stage") { model.stage([change]) }
-                    Button(change.kind == .untracked ? "Delete File…" : "Discard Changes…") { toDiscard = change }
-                case .staged:
-                    Button("Unstage") { model.unstage([change]) }
-                case .conflicted:
-                    Button("Use Ours (whole file)") { model.takeWholeFile(change, side: .ours) }
-                    Button("Use Theirs (whole file)") { model.takeWholeFile(change, side: .theirs) }
-                    Button("Mark Resolved as Is") { model.markResolvedAsIs(change) }
-                }
-                Divider()
-                Button("Open") { model.openInDefaultApp(change.path) }
-                Button("Reveal in Finder") { model.revealInFinder(change.path) }
-                Button("Copy Path") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(change.path, forType: .string)
-                }
+    @ViewBuilder
+    private func menu(for changes: [FileChange]) -> some View {
+        let unstaged = changes.filter { $0.area == .unstaged }
+        let staged = changes.filter { $0.area == .staged }
+        let many = changes.count > 1
+        if !unstaged.isEmpty {
+            Button(many ? "Stage \(unstaged.count) Files" : "Stage") { model.stage(unstaged) }
+            Button(unstaged.allSatisfy { $0.kind == .untracked }
+                   ? (many ? "Delete \(unstaged.count) Files…" : "Delete File…")
+                   : (many ? "Discard Changes to \(unstaged.count) Files…" : "Discard Changes…")) {
+                toDiscard = unstaged
             }
+        }
+        if !staged.isEmpty {
+            Button(many ? "Unstage \(staged.count) Files" : "Unstage") { model.unstage(staged) }
+        }
+        if changes.count == 1, let change = changes.first {
+            if change.area == .conflicted {
+                Button("Use Ours (whole file)") { model.takeWholeFile(change, side: .ours) }
+                Button("Use Theirs (whole file)") { model.takeWholeFile(change, side: .theirs) }
+                Button("Mark Resolved as Is") { model.markResolvedAsIs(change) }
+            }
+            Divider()
+            Button("Open") { model.openInDefaultApp(change.path) }
+            Button("Reveal in Finder") { model.revealInFinder(change.path) }
+        }
+        if !changes.isEmpty {
+            if many { Divider() }
+            Button(many ? "Copy \(changes.count) Paths" : "Copy Path") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(changes.map(\.path).joined(separator: "\n"), forType: .string)
+            }
+        }
     }
 }
 

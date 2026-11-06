@@ -21,7 +21,18 @@ final class RepoModel: ObservableObject, Identifiable {
     @Published var opState: OperationState = .none
     @Published var loaded = false
 
-    @Published var selectedChangeID: String?
+    /// The file whose diff is shown (the last one clicked).
+    @Published var selectedChangeID: String? {
+        didSet {
+            if let id = selectedChangeID {
+                if !selectedChangeIDs.contains(id) { selectedChangeIDs = [id] }
+            } else if !selectedChangeIDs.isEmpty {
+                selectedChangeIDs = []
+            }
+        }
+    }
+    /// All selected files (⌘-click / ⇧-click), always within one list.
+    @Published private(set) var selectedChangeIDs: Set<String> = []
     @Published var diff: [DiffLine] = []
     @Published var conflict: ConflictFile?
     @Published var conflictChoices: [Int: ConflictFile.Resolution] = [:]
@@ -70,6 +81,18 @@ final class RepoModel: ObservableObject, Identifiable {
     // MARK: derived
 
     var selectedChange: FileChange? { status.allChanges.first { $0.id == selectedChangeID } }
+    var selectedChanges: [FileChange] { status.allChanges.filter { selectedChangeIDs.contains($0.id) } }
+
+    /// Called by the file lists. Keeps the diff on the file that was just added, if any.
+    func setChangeSelection(_ ids: Set<String>) {
+        let added = ids.subtracting(selectedChangeIDs)
+        selectedChangeIDs = ids
+        if let id = added.first {
+            if selectedChangeID != id { selectedChangeID = id }
+        } else if !(selectedChangeID.map(ids.contains) ?? false) {
+            selectedChangeID = ids.first
+        }
+    }
     var localBranches: [Branch] { branches.filter { !$0.isRemote } }
     var remoteGroups: [(remote: String, branches: [Branch])] {
         Dictionary(grouping: branches.filter(\.isRemote), by: { $0.remoteName ?? "?" })
@@ -124,8 +147,14 @@ final class RepoModel: ObservableObject, Identifiable {
                 commitMessage = message
             }
             // A file moves between Unstaged/Staged when you (un)stage it: keep it selected.
-            if selectedChangeID != nil, selectedChange == nil {
-                selectedChangeID = status.allChanges.first { $0.path == selectedPath }?.id
+            let live = Set(status.allChanges.map(\.id))
+            if !selectedChangeIDs.isSubset(of: live) {
+                let paths = Set(selectedChangeIDs.map { String($0.drop { $0 != ":" }.dropFirst()) })
+                let moved = status.allChanges.filter { paths.contains($0.path) }
+                let focus = moved.first { $0.path == selectedPath } ?? moved.first
+                // Moved files can land in two lists (partly staged): keep the focused one's list.
+                selectedChangeIDs = Set(moved.filter { $0.area == focus?.area }.map(\.id))
+                selectedChangeID = focus?.id
             }
             await loadDetail()
         } catch {
@@ -359,11 +388,13 @@ final class RepoModel: ObservableObject, Identifiable {
             try await repo.deleteBranch(name, force: true)
         case .deleteBranch(let name, let sha):
             try await repo.createBranch(name, at: sha)
-        case .discard(let change, let patch, let data):
-            if let data {
-                try repo.writeFile(change.path, data: data)
-            } else if let patch {
-                try await repo.applyPatch(patch)
+        case .discard(let files):
+            for file in files {
+                if let data = file.data {
+                    try repo.writeFile(file.change.path, data: data)
+                } else if let patch = file.patch {
+                    try await repo.applyPatch(patch)
+                }
             }
         }
     }
@@ -383,8 +414,8 @@ final class RepoModel: ObservableObject, Identifiable {
             try await repo.switchTo(.branch(name))
         case .deleteBranch(let name, _):
             try await repo.deleteBranch(name, force: true)
-        case .discard(let change, _, _):
-            try await repo.discard(change)
+        case .discard(let files):
+            for file in files { try await repo.discard(file.change) }
         }
     }
 
@@ -504,18 +535,26 @@ final class RepoModel: ObservableObject, Identifiable {
     func unstage(_ changes: [FileChange]) { quick { try await self.repo.unstage(changes.map(\.path)) } }
     func stageAll() { stage(status.unstaged) }
     func unstageAll() { unstage(status.staged) }
-    func discard(_ change: FileChange) {
-        runUndoable("Discarding \(change.fileName)…") {
-            var data: Data?
-            var patch: String?
-            if change.kind == .untracked {
-                data = try? Data(contentsOf: self.repo.url.appendingPathComponent(change.path))
-            } else {
-                patch = try await self.repo.worktreePatch(for: change.path)
+    func discard(_ changes: [FileChange]) {
+        let changes = changes.filter { $0.area == .unstaged }
+        guard !changes.isEmpty else { return }
+        let label = changes.count == 1 ? changes[0].fileName : "\(changes.count) files"
+        runUndoable("Discarding \(label)…") {
+            var saved: [DiscardedFile] = []
+            for change in changes {
+                var data: Data?
+                var patch: String?
+                if change.kind == .untracked {
+                    data = try? Data(contentsOf: self.repo.url.appendingPathComponent(change.path))
+                } else {
+                    patch = try await self.repo.worktreePatch(for: change.path)
+                }
+                if data != nil || !(patch ?? "").isEmpty {
+                    saved.append(DiscardedFile(change: change, patch: patch, data: data))
+                }
             }
-            try await self.repo.discard(change)
-            guard data != nil || !(patch ?? "").isEmpty else { return nil }
-            return .discard(change, patch: patch, data: data)
+            for change in changes { try await self.repo.discard(change) }
+            return saved.isEmpty ? nil : .discard(saved)
         }
     }
 
@@ -716,8 +755,7 @@ enum UndoStep {
     case checkout(from: HeadRef, to: HeadRef)
     case createBranch(name: String, sha: String, previous: HeadRef)
     case deleteBranch(name: String, sha: String)
-    /// `patch` for tracked files, `data` for untracked ones.
-    case discard(FileChange, patch: String?, data: Data?)
+    case discard([DiscardedFile])
 
     var title: String {
         switch self {
@@ -727,7 +765,16 @@ enum UndoStep {
         case .checkout(_, let to): return "checkout \(to.label)"
         case .createBranch(let name, _, _): return "create branch \(name)"
         case .deleteBranch(let name, _): return "delete branch \(name)"
-        case .discard(let change, _, _): return "discard \(change.fileName)"
+        case .discard(let files):
+            return files.count == 1 ? "discard \(files[0].change.fileName)" : "discard \(files.count) files"
         }
     }
+}
+
+/// A discarded file and what's needed to bring it back:
+/// `patch` for tracked files, `data` for untracked ones.
+struct DiscardedFile {
+    let change: FileChange
+    let patch: String?
+    let data: Data?
 }

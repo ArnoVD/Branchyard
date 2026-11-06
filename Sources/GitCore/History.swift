@@ -56,7 +56,7 @@ public struct Commit: Identifiable, Hashable, Sendable {
                date: Date(), subject: "// WIP", refs: [])
     }
 
-    /// "Arno van Dijck" → "AV"
+    /// "Ada Lovelace" → "AL"
     public var initials: String {
         let words = author.split(whereSeparator: { $0 == " " || $0 == "." || $0 == "-" || $0 == "_" })
         let letters = words.count >= 2 ? [words.first!, words.last!] : Array(words.prefix(1))
