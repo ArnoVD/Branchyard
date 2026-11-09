@@ -45,9 +45,16 @@ public struct Git: Sendable {
         environment extraEnv: [String: String] = [:]
     ) async throws -> GitResult {
         let dir = directory
-        let result = try await Task.detached(priority: .userInitiated) {
-            try Git.runSync(args, in: dir, extraEnv: extraEnv)
-        }.value
+        // A thread of its own, not Swift's shared pool: runSync blocks until git exits, and a
+        // burst of commands (one refresh per open tab) used to fill every pool thread with
+        // waiters while the work that reads git's output never got a thread, hanging them all.
+        let result: GitResult = try await withCheckedThrowingContinuation { continuation in
+            let thread = Thread {
+                continuation.resume(with: Result { try Git.runSync(args, in: dir, extraEnv: extraEnv) })
+            }
+            thread.qualityOfService = .userInitiated
+            thread.start()
+        }
         if !allowFailure && !result.succeeded {
             throw GitError(command: args.joined(separator: " "), output: result.combinedOutput)
         }
@@ -94,10 +101,11 @@ public struct Git: Sendable {
         let outBox = Box()
         let group = DispatchGroup()
         group.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
+        // Also a plain thread: a queue's worker might not start while git is waiting on it.
+        Thread {
             outBox.data = outPipe.fileHandleForReading.readDataToEndOfFile()
             group.leave()
-        }
+        }.start()
         let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
         group.wait()
         process.waitUntilExit()

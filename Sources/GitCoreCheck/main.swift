@@ -650,5 +650,23 @@ check(soloSide.count == 6 && soloSide.first { $0.subject == "side change" }?.ref
       "solo shows that branch and HEAD, with only their labels")
 check(try await subjects(GraphFilter(soloRefs: ["refs/heads/gone"])).count == 5, "solo on a deleted branch still shows HEAD")
 
+// MARK: many git commands at once
+// Each command used to block a shared worker thread; with more commands than cores the
+// threads that read git's output never got to run, and every command hung for good.
+final class Flag: @unchecked Sendable { var done = false }
+let manyDone = Flag()
+Thread {
+    Thread.sleep(forTimeInterval: 30)
+    if !manyDone.done { print("FAIL  200 git commands at once finish (hung)"); exit(1) }
+}.start()
+let manyCount = await withTaskGroup(of: Bool.self) { group in
+    for _ in 0..<200 { group.addTask { (try? await fr.headSHA()) != nil } }
+    var n = 0
+    for await ok in group where ok { n += 1 }
+    return n
+}
+manyDone.done = true
+check(manyCount == 200, "200 git commands at once finish")
+
 print(failures == 0 ? "\nAll checks passed." : "\n\(failures) check(s) failed.")
 exit(failures == 0 ? 0 : 1)
