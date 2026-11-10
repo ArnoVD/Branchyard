@@ -276,7 +276,10 @@ private struct TabMouseArea: NSViewRepresentable {
     let dropped: (() -> Void)?
     let hover: (Bool) -> Void
 
-    func makeNSView(context: Context) -> TabMouseView { TabMouseView() }
+    func makeNSView(context: Context) -> TabMouseView {
+        TabMouseView.installMonitor()
+        return TabMouseView()
+    }
 
     func updateNSView(_ view: TabMouseView, context: Context) {
         view.closeWidth = closeWidth
@@ -304,6 +307,42 @@ final class TabMouseView: NSView {
 
     override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// The top of the tab strip lies in the (hidden) title bar, where macOS starts moving the window
+    /// before the tab sees the click. This catches presses on a tab before the window does.
+    private static var monitor: Any?
+    private static weak var pressed: TabMouseView?
+
+    static func installMonitor() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { event in
+            // Local monitors run on the main thread.
+            nonisolated(unsafe) let event = event
+            return MainActor.assumeIsolated { route(event) } ? nil : event
+        }
+    }
+
+    /// Hands the event to the tab under (or holding) the mouse; true when a tab took it.
+    private static func route(_ event: NSEvent) -> Bool {
+        switch event.type {
+        case .leftMouseDown:
+            guard let window = event.window, window.attachedSheet == nil,
+                  let frame = window.contentView?.superview,
+                  let tab = frame.hitTest(frame.convert(event.locationInWindow, from: nil)) as? TabMouseView
+            else { return false }
+            if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+            pressed = tab
+            tab.mouseDown(with: event)
+        case .leftMouseDragged:
+            guard let tab = pressed else { return false }
+            tab.mouseDragged(with: event)
+        default:
+            guard let tab = pressed else { return false }
+            pressed = nil
+            tab.mouseUp(with: event)
+        }
+        return true
+    }
 
     private var closeRect: NSRect { NSRect(x: bounds.maxX - closeWidth, y: 0, width: closeWidth, height: bounds.height) }
 
