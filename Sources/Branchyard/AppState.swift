@@ -137,6 +137,13 @@ final class AppState: ObservableObject {
         saveTabs()
     }
 
+    /// Moves a repository tab to `index` (drag to reorder in the tab strip).
+    func moveTab(_ id: String, to index: Int) {
+        guard let from = tabs.firstIndex(where: { $0.id == id }), tabs.indices.contains(index), from != index else { return }
+        tabs.insert(tabs.remove(at: from), at: index)
+        saveTabs()
+    }
+
     func selectTab(at index: Int) {
         if tabs.indices.contains(index) {
             selectedTabID = tabs[index].id

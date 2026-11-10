@@ -90,6 +90,35 @@ private struct WindowConfigurator: NSViewRepresentable {
 /// `● ● ●  📁 | ⑂ repo-a | ⑂ repo-b × | New Tab | +            ⚙`
 struct TabStrip: View {
     @EnvironmentObject private var state: AppState
+    /// The tab being dragged: how far it sits from its slot, and how far its slot has moved.
+    @ViewState private var drag: (id: String, offset: CGFloat, shift: CGFloat)?
+    @ViewState private var widths: [String: CGFloat] = [:]
+
+    /// Follows the mouse; once the tab is past half of a neighbour, they swap places.
+    private func dragTab(_ id: String, by dx: CGFloat) {
+        var shift = drag?.id == id ? drag!.shift : 0
+        while let index = state.tabs.firstIndex(where: { $0.id == id }) {
+            let offset = dx - shift
+            if offset > 0, index + 1 < state.tabs.count,
+               let next = widths[state.tabs[index + 1].id], offset > next / 2 {
+                withAnimation(.easeOut(duration: 0.15)) { state.moveTab(id, to: index + 1) }
+                shift += next + 1
+            } else if offset < 0, index > 0,
+                      let previous = widths[state.tabs[index - 1].id], -offset > previous / 2 {
+                withAnimation(.easeOut(duration: 0.15)) { state.moveTab(id, to: index - 1) }
+                shift -= previous + 1
+            } else {
+                break
+            }
+        }
+        drag = (id, dx - shift, shift)
+    }
+
+    private func endDrag() {
+        guard let id = drag?.id else { return }
+        drag = (id, drag!.offset, drag!.shift)
+        withAnimation(.easeOut(duration: 0.15)) { drag = nil }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -103,19 +132,26 @@ struct TabStrip: View {
                     ForEach(Array(state.tabs.enumerated()), id: \.element.id) { index, tab in
                         TabSeparator(hidden: index == 0
                                      || tab.id == state.selectedTabID
-                                     || state.tabs[index - 1].id == state.selectedTabID)
+                                     || state.tabs[index - 1].id == state.selectedTabID
+                                     || drag != nil)
                         TabButton(
                             title: tab.name,
                             icon: "arrow.triangle.branch",
                             isSelected: tab.id == state.selectedTabID,
                             select: { state.selectedTabID = tab.id },
-                            close: { state.closeTab(tab.id) }
+                            close: { state.closeTab(tab.id) },
+                            menu: [
+                                ("Close Tab", { state.closeTab(tab.id) }),
+                                ("Reveal in Finder", { tab.revealInFinder() }),
+                                ("Open in Terminal", { tab.openInTerminal() }),
+                            ],
+                            dragged: { dx in dragTab(tab.id, by: dx) },
+                            dropped: { endDrag() }
                         )
-                        .contextMenu {
-                            Button("Close Tab") { state.closeTab(tab.id) }
-                            Button("Reveal in Finder") { tab.revealInFinder() }
-                            Button("Open in Terminal") { tab.openInTerminal() }
-                        }
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { widths[tab.id] = $0 }
+                        .offset(x: drag?.id == tab.id ? drag!.offset : 0)
+                        .zIndex(drag?.id == tab.id ? 1 : 0)
+                        .transaction { if drag?.id == tab.id { $0.animation = nil } }
                     }
                     if state.landingOpen || state.tabs.isEmpty {
                         TabSeparator(hidden: state.tabs.isEmpty
@@ -126,7 +162,8 @@ struct TabStrip: View {
                             icon: nil,
                             isSelected: state.selectedTab == nil,
                             select: { state.newTab() },
-                            close: { state.closeTab(AppState.landingID) }
+                            close: { state.closeTab(AppState.landingID) },
+                            menu: [("Close Tab", { state.closeTab(AppState.landingID) })]
                         )
                     }
                     StripIconButton(icon: "plus", help: "New tab (⌘T)") { state.newTab() }
@@ -190,6 +227,9 @@ private struct TabButton: View {
     let isSelected: Bool
     let select: () -> Void
     let close: () -> Void
+    var menu: [(String, () -> Void)] = []
+    var dragged: ((CGFloat) -> Void)?
+    var dropped: (() -> Void)?
     @ViewState private var hovering = false
 
     var body: some View {
@@ -203,16 +243,11 @@ private struct TabButton: View {
                 .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
                 .foregroundStyle(isSelected ? .primary : .secondary)
                 .lineLimit(1)
-            Button(action: close) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16, height: 16)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .opacity(hovering || isSelected ? 1 : 0)
-            .help("Close tab (⇧⌘W)")
+            Image(systemName: "xmark")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(width: 16, height: 16)
+                .opacity(hovering || isSelected ? 1 : 0)
         }
         .padding(.leading, 14)
         .padding(.trailing, 8)
@@ -223,10 +258,111 @@ private struct TabButton: View {
                 .fill(isSelected ? Color.byToolbar : (hovering ? Color.primary.opacity(0.05) : .clear))
                 .padding(.top, 4)
         )
-        .contentShape(Rectangle())
-        .onTapGesture(perform: select)
-        .onHover { hovering = $0 }
+        // Clicks, drags, the close button and the menu go to an AppKit view: SwiftUI views count
+        // as window background, so dragging a tab would move the whole window.
+        .overlay(TabMouseArea(closeWidth: 8 + 16 + 4, select: select, close: close, menu: menu,
+                              dragged: dragged, dropped: dropped, hover: { hovering = $0 }))
     }
+}
+
+/// Mouse handling for one tab: select on press, drag to reorder (without moving the window),
+/// close button at the trailing edge, middle-click to close, right-click menu.
+private struct TabMouseArea: NSViewRepresentable {
+    let closeWidth: CGFloat
+    let select: () -> Void
+    let close: () -> Void
+    let menu: [(String, () -> Void)]
+    let dragged: ((CGFloat) -> Void)?
+    let dropped: (() -> Void)?
+    let hover: (Bool) -> Void
+
+    func makeNSView(context: Context) -> TabMouseView { TabMouseView() }
+
+    func updateNSView(_ view: TabMouseView, context: Context) {
+        view.closeWidth = closeWidth
+        view.select = select
+        view.close = close
+        view.menuItems = menu
+        view.dragged = dragged
+        view.dropped = dropped
+        view.hover = hover
+    }
+}
+
+final class TabMouseView: NSView {
+    var closeWidth: CGFloat = 0
+    var select: () -> Void = {}
+    var close: () -> Void = {}
+    var menuItems: [(String, () -> Void)] = []
+    var dragged: ((CGFloat) -> Void)?
+    var dropped: (() -> Void)?
+    var hover: (Bool) -> Void = { _ in }
+
+    private var pressX: CGFloat?
+    private var dragging = false
+    private var closeTip: NSView.ToolTipTag?
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    private var closeRect: NSRect { NSRect(x: bounds.maxX - closeWidth, y: 0, width: closeWidth, height: bounds.height) }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+        if let closeTip { removeToolTip(closeTip) }
+        closeTip = addToolTip(closeRect, owner: "Close tab (⇧⌘W)" as NSString, userData: nil)
+    }
+
+    override func mouseEntered(with event: NSEvent) { hover(true) }
+    override func mouseExited(with event: NSEvent) { hover(false) }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        pressX = event.locationInWindow.x
+        dragging = false
+        if !closeRect.contains(point) { select() }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let pressX, let dragged else { return }
+        let dx = event.locationInWindow.x - pressX
+        if !dragging, abs(dx) < 4 { return }
+        dragging = true
+        dragged(dx)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        defer { pressX = nil; dragging = false }
+        if dragging { dropped?(); return }
+        if closeRect.contains(convert(event.locationInWindow, from: nil)) { close() }
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        if event.buttonNumber == 2 { close() }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard !menuItems.isEmpty else { return nil }
+        let menu = NSMenu()
+        for (title, action) in menuItems {
+            menu.addItem(ClosureMenuItem(title: title, action: action))
+        }
+        return menu
+    }
+}
+
+private final class ClosureMenuItem: NSMenuItem {
+    private let run: () -> Void
+    init(title: String, action: @escaping () -> Void) {
+        run = action
+        super.init(title: title, action: #selector(fire), keyEquivalent: "")
+        target = self
+    }
+    required init(coder: NSCoder) { fatalError("not used") }
+    @objc private func fire() { run() }
 }
 
 // MARK: - Profile switcher

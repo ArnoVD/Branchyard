@@ -92,4 +92,4 @@ The Pull button's dropdown switches the mode too.
 
 Double-click a branch to check it out. Right-click branches, stashes and files for more.
 Opening a file's diff folds the branches panel into a thin rail; click its icon to bring it back.
-Drag the lines between panels to resize them.
+Drag the lines between panels to resize them. Drag tabs to reorder them; middle-click a tab to close it.
