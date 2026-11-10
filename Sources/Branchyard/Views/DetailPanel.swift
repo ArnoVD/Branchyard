@@ -690,54 +690,24 @@ private struct SplitDiff: View {
 struct ConflictResolverView: View {
     @ObservedObject var model: RepoModel
     let change: FileChange
+    @ViewState private var focus = 0
 
     private var bothSidesHaveFile: Bool { change.conflictCode == "UU" || change.conflictCode == "AA" }
 
     var body: some View {
         VStack(spacing: 0) {
             if let conflict = model.conflict, bothSidesHaveFile, !conflict.hunks.isEmpty {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(conflict.segments.enumerated()), id: \.offset) { _, segment in
-                            switch segment {
-                            case .text(let lines):
-                                ContextBlock(lines: lines)
-                            case .conflict(let hunk):
-                                HunkView(hunk: hunk, choice: Binding(
-                                    get: { model.conflictChoices[hunk.id] },
-                                    set: { model.conflictChoices[hunk.id] = $0 }
-                                ), total: conflict.hunks.count)
-                            }
-                        }
-                    }
-                    .padding(.vertical, 6)
+                VSplitView {
+                    ConflictSidesView(model: model, conflict: conflict, focus: min(focus, conflict.hunks.count - 1))
+                        .frame(minHeight: 150, idealHeight: 360)
+                    ConflictOutputView(model: model, change: change, conflict: conflict, focus: $focus)
+                        .frame(minHeight: 140, idealHeight: 260)
                 }
-                Divider()
-                footer(conflict)
+                .onChange(of: change.id) { focus = 0 }
             } else {
                 wholeFileChooser
             }
         }
-    }
-
-    private func footer(_ conflict: ConflictFile) -> some View {
-        let done = conflict.hunks.filter { model.conflictChoices[$0.id] != nil }.count
-        return HStack {
-            Text("\(done) of \(conflict.hunks.count) conflicts chosen")
-                .foregroundStyle(.secondary)
-            Spacer()
-            Menu("Whole File") {
-                Button("Use Ours for everything") { model.takeWholeFile(change, side: .ours) }
-                Button("Use Theirs for everything") { model.takeWholeFile(change, side: .theirs) }
-                Divider()
-                Button("I fixed it in my editor: mark resolved") { model.markResolvedAsIs(change) }
-            }
-            .fixedSize()
-            Button("Save & Mark Resolved") { model.saveResolution(for: change) }
-                .buttonStyle(.borderedProminent)
-                .disabled(done < conflict.hunks.count)
-        }
-        .padding(10)
     }
 
     /// For delete/modify conflicts, or files without markers (binary, already edited).
@@ -774,92 +744,372 @@ struct ConflictResolverView: View {
     private var theirsLabel: String { change.conflictCode == "UD" || change.conflictCode == "DD" ? "Delete File (theirs)" : "Use Theirs" }
 }
 
-private struct ContextBlock: View {
-    let lines: [String]
-    @ViewState private var expanded = false
+private enum ConflictStyle {
+    static func tint(_ side: ConflictPicks.Side) -> Color { side == .ours ? .blue : .purple }
+    static let font = Font.system(size: 12, design: .monospaced)
 
-    var body: some View {
-        let shown = (expanded || lines.count <= 8) ? lines : Array(lines.prefix(3)) + ["…"] + Array(lines.suffix(3))
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(shown.enumerated()), id: \.offset) { _, line in
-                Text(line.isEmpty ? " " : line)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 12)
-            }
-            if lines.count > 8 {
-                Button(expanded ? "Collapse" : "Show \(lines.count - 6) more lines") { expanded.toggle() }
-                    .buttonStyle(.link)
-                    .font(.caption)
-                    .padding(.horizontal, 12)
-            }
-        }
-        .padding(.vertical, 4)
+    enum Check { case none, some, all }
+
+    static func check(_ lines: [ConflictPicks.Line], in picks: ConflictPicks) -> Check {
+        let n = lines.filter(picks.contains).count
+        return n == 0 ? .none : n == lines.count ? .all : .some
+    }
+
+    static func box(_ state: Check, _ tint: Color) -> some View {
+        Image(systemName: state == .all ? "checkmark.square.fill" : state == .some ? "minus.square.fill" : "square")
+            .foregroundStyle(state == .none ? Color.secondary : tint)
+            .font(.system(size: 13))
+    }
+
+    static func display(_ line: String) -> String {
+        line.isEmpty ? " " : line.replacingOccurrences(of: "\t", with: "    ")
     }
 }
 
-private struct HunkView: View {
-    let hunk: ConflictFile.Hunk
-    @Binding var choice: ConflictFile.Resolution?
-    let total: Int
+/// A and B side by side: every conflicting line has a checkbox; each conflict and each side has
+/// one that picks all of its lines. Shared lines show on both sides, so the panes scroll together.
+private struct ConflictSidesView: View {
+    @ObservedObject var model: RepoModel
+    let conflict: ConflictFile
+    let focus: Int
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Conflict \(hunk.id + 1) of \(total)").font(.caption.bold())
-                Spacer()
-                Picker("", selection: $choice) {
-                    Text("Choose…").tag(ConflictFile.Resolution?.none)
-                    ForEach(ConflictFile.Resolution.allCases) { r in
-                        Text(r.label).tag(ConflictFile.Resolution?.some(r))
-                    }
+    private typealias Side = ConflictPicks.Side
+    private typealias Line = ConflictPicks.Line
+
+    private struct Row: Identifiable {
+        enum Kind { case text(String), header(ConflictFile.Hunk), line(ConflictFile.Hunk, Int) }
+        let id: String
+        let kind: Kind
+        let numA: Int?
+        let numB: Int?
+    }
+
+    private var rows: [Row] {
+        var rows: [Row] = []
+        var a = 1, b = 1
+        for (s, segment) in conflict.segments.enumerated() {
+            switch segment {
+            case .text(let lines):
+                for (i, line) in lines.enumerated() {
+                    rows.append(Row(id: "t\(s).\(i)", kind: .text(line), numA: a, numB: b))
+                    a += 1
+                    b += 1
                 }
-                .labelsHidden()
-                .fixedSize()
-            }
-            HStack(alignment: .top, spacing: 8) {
-                side(title: "Ours · \(hunk.oursLabel)", lines: hunk.ours, tint: .blue,
-                     selected: choice == .ours || choice == .oursThenTheirs || choice == .theirsThenOurs) {
-                    choice = .ours
+            case .conflict(let hunk):
+                rows.append(Row(id: "h\(hunk.id)", kind: .header(hunk), numA: nil, numB: nil))
+                for i in 0..<max(hunk.ours.count, hunk.theirs.count, 1) {
+                    rows.append(Row(id: "l\(hunk.id).\(i)", kind: .line(hunk, i),
+                                    numA: i < hunk.ours.count ? a + i : nil, numB: i < hunk.theirs.count ? b + i : nil))
                 }
-                side(title: "Theirs · \(hunk.theirsLabel)", lines: hunk.theirs, tint: .purple,
-                     selected: choice == .theirs || choice == .oursThenTheirs || choice == .theirsThenOurs) {
-                    choice = .theirs
-                }
-            }
-            if let base = hunk.base, !base.isEmpty {
-                DisclosureGroup("Original (common ancestor)") {
-                    code(base).frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .font(.caption)
+                a += hunk.ours.count
+                b += hunk.theirs.count
             }
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(choice == nil ? 0.10 : 0.04)))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(choice == nil ? Color.orange : Color.green.opacity(0.6)))
+        if case .text("")? = rows.last?.kind { rows.removeLast() }  // the file's final newline
+        return rows
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                paneHeader(.ours)
+                Divider()
+                paneHeader(.theirs)
+            }
+            .frame(height: 30)
+            Divider()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(rows) { row in
+                            HStack(spacing: 0) {
+                                cell(row, .ours)
+                                Divider()
+                                cell(row, .theirs)
+                            }
+                            .fixedSize(horizontal: false, vertical: true)
+                            .id(row.id)
+                        }
+                    }
+                    .padding(.bottom, 8)
+                }
+                .onChange(of: focus) { proxy.scrollTo("h\(focus)", anchor: .top) }
+            }
+        }
+    }
+
+    private func paneHeader(_ side: Side) -> some View {
+        let lines = conflict.hunks.flatMap { ConflictPicks.all(side, of: $0) }
+        let label = side == .ours ? conflict.hunks[0].oursLabel : conflict.hunks[0].theirsLabel
+        return HStack(spacing: 6) {
+            Button { toggle(lines) } label: { ConflictStyle.box(ConflictStyle.check(lines, in: model.conflictPicks), ConflictStyle.tint(side)) }
+                .buttonStyle(.plain)
+                .help("Take every conflicting line from \(side == .ours ? "A" : "B")")
+            Text(side == .ours ? "A" : "B")
+                .font(.caption.bold())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 5)
+                .background(RoundedRectangle(cornerRadius: 3).fill(ConflictStyle.tint(side)))
+            Text(side == .ours ? "Ours" : "Theirs").font(.callout.bold())
+            Text(label).font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private func cell(_ row: Row, _ side: Side) -> some View {
+        let tint = ConflictStyle.tint(side)
+        let num = side == .ours ? row.numA : row.numB
+        switch row.kind {
+        case .text(let text):
+            line(num: num, text: text, check: nil, tint: tint)
+                .foregroundStyle(.secondary)
+        case .header(let hunk):
+            let lines = ConflictPicks.all(side, of: hunk)
+            let resolved = model.conflictPicks.isResolved(hunk.id)
+            HStack(spacing: 6) {
+                Button { toggle(lines) } label: { ConflictStyle.box(ConflictStyle.check(lines, in: model.conflictPicks), tint) }
+                    .buttonStyle(.plain)
+                    .help("Take all of this conflict's lines from \(side == .ours ? "A" : "B")")
+                Text("Conflict \(hunk.id + 1) of \(conflict.hunks.count)").font(.caption.bold())
+                if !resolved, side == .ours {
+                    Text("pick lines from A, B or both").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .background(Color.orange.opacity(resolved ? 0.06 : 0.18))
+            .overlay(alignment: .top) { Rectangle().fill(Color.orange.opacity(resolved ? 0.3 : 0.8)).frame(height: 1) }
+        case .line(let hunk, let i):
+            let lines = side == .ours ? hunk.ours : hunk.theirs
+            if i < lines.count || (lines.isEmpty && i == 0) {
+                let pick = Line(hunk: hunk.id, side: side, index: lines.isEmpty ? Line.whole : i)
+                let picked = model.conflictPicks.contains(pick)
+                Group {
+                    if lines.isEmpty {
+                        line(num: nil, text: "(no lines on this side: pick to keep nothing)", check: picked, tint: tint)
+                            .italic()
+                            .foregroundStyle(.secondary)
+                    } else {
+                        line(num: num, text: lines[i], check: picked, tint: tint)
+                    }
+                }
+                .background(tint.opacity(picked ? 0.24 : 0.08))
+                .contentShape(Rectangle())
+                .onTapGesture { model.conflictPicks.toggle(pick) }
+            } else {
+                line(num: nil, text: "", check: nil, tint: tint)
+                    .background(Color.secondary.opacity(0.05))
+            }
+        }
+    }
+
+    private func line(num: Int?, text: String, check: Bool?, tint: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            ConflictStyle.box(check == true ? .all : .none, tint)
+                .opacity(check == nil ? 0 : 1)
+            Text(num.map(String.init) ?? "")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .frame(width: 32, alignment: .trailing)
+            Text(ConflictStyle.display(text))
+                .font(ConflictStyle.font)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 1)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func toggle(_ lines: [Line]) {
+        let all = ConflictStyle.check(lines, in: model.conflictPicks) == .all
+        model.conflictPicks.set(lines, picked: !all)
+    }
+}
+
+/// The result of the picks, with conflict navigation, hand editing and Save.
+private struct ConflictOutputView: View {
+    @ObservedObject var model: RepoModel
+    let change: FileChange
+    let conflict: ConflictFile
+    @Binding var focus: Int
+
+    private struct Row: Identifiable {
+        let id: String
+        let line: ConflictFile.OutputLine
+        let num: Int?
+    }
+
+    private var editing: Bool { model.conflictEditedText != nil }
+    private var open: Int { conflict.hunks.filter { !model.conflictPicks.isResolved($0.id) }.count }
+
+    private var canSave: Bool {
+        if let text = model.conflictEditedText {
+            return !text.split(separator: "\n", omittingEmptySubsequences: false)
+                .contains { $0.hasPrefix("<<<<<<<") || $0.hasPrefix(">>>>>>>") }
+        }
+        return open == 0
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            if editing {
+                TextEditor(text: Binding(get: { model.conflictEditedText ?? "" }, set: { model.conflictEditedText = $0 }))
+                    .font(ConflictStyle.font)
+                    .scrollContentBackground(.hidden)
+                    .padding(4)
+            } else {
+                output
+            }
+        }
+    }
+
+    private var header: some View {
+        let n = conflict.hunks.count
+        return HStack(spacing: 8) {
+            Text("Output").font(.callout.bold())
+            if editing {
+                Text("edited by hand").font(.caption).foregroundStyle(.orange)
+            } else if open > 0 {
+                Text("\(open) unresolved").font(.caption).foregroundStyle(.orange)
+            } else {
+                Label("all resolved", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+            }
+            Spacer(minLength: 8)
+            if !editing {
+                Text("conflict \(min(focus, n - 1) + 1) of \(n)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                Button { focus = (min(focus, n - 1) - 1 + n) % n } label: { Image(systemName: "chevron.up") }
+                    .help("Previous conflict")
+                Button { focus = (min(focus, n - 1) + 1) % n } label: { Image(systemName: "chevron.down") }
+                    .help("Next conflict")
+                Divider().frame(height: 16)
+            }
+            if editing {
+                Button("Discard Edits") { model.conflictEditedText = nil }
+                    .help("Go back to picking lines")
+            } else {
+                Button("Edit") { model.conflictEditedText = editableText() }
+                    .help("Edit the output by hand")
+            }
+            Menu("Whole File") {
+                Button("Use A (ours) for everything") { model.takeWholeFile(change, side: .ours) }
+                Button("Use B (theirs) for everything") { model.takeWholeFile(change, side: .theirs) }
+                Divider()
+                Button("I fixed it in my editor: mark resolved") { model.markResolvedAsIs(change) }
+            }
+            .fixedSize()
+            Button("Save") { model.saveResolution(for: change) }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canSave)
+                .help(canSave ? "Save the output and mark the file resolved"
+                      : editing ? "Remove the remaining conflict markers first" : "Pick lines for every conflict first")
+        }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
     }
 
-    private func side(title: String, lines: [String], tint: Color, selected: Bool, pick: @escaping () -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(title).font(.caption).foregroundStyle(tint).lineLimit(1).truncationMode(.middle)
-                Spacer()
-                Button("Use this", action: pick).controlSize(.small)
+    private var rows: [Row] {
+        var rows: [Row] = []
+        var num = 1
+        var seen = Set<Int>()
+        for (i, line) in conflict.output(model.conflictPicks).enumerated() {
+            var id = "x\(i)"
+            switch line {
+            case .text:
+                rows.append(Row(id: id, line: line, num: num))
+                num += 1
+            case .picked(_, _, let hunk), .unresolved(let hunk):
+                if seen.insert(hunk).inserted { id = "o\(hunk)" }
+                if case .unresolved = line {
+                    rows.append(Row(id: id, line: line, num: nil))
+                } else {
+                    rows.append(Row(id: id, line: line, num: num))
+                    num += 1
+                }
             }
-            code(lines.isEmpty ? ["(nothing)"] : lines)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(6)
-                .background(RoundedRectangle(cornerRadius: 5).fill(tint.opacity(selected ? 0.18 : 0.06)))
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(selected ? tint : .clear, lineWidth: 1.5))
         }
-        .frame(maxWidth: .infinity)
+        if case .text("")? = rows.last?.line { rows.removeLast() }
+        return rows
     }
 
-    private func code(_ lines: [String]) -> some View {
-        Text(lines.joined(separator: "\n"))
-            .font(.system(size: 12, design: .monospaced))
-            .textSelection(.enabled)
+    private var output: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(rows) { row in
+                        outputRow(row).id(row.id)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .onChange(of: focus) { proxy.scrollTo("o\(focus)", anchor: .center) }
+        }
+    }
+
+    @ViewBuilder
+    private func outputRow(_ row: Row) -> some View {
+        switch row.line {
+        case .text(let text):
+            line(row.num, text, bar: nil)
+        case .picked(let text, let side, _):
+            line(row.num, text, bar: ConflictStyle.tint(side))
+                .background(ConflictStyle.tint(side).opacity(0.12))
+        case .unresolved(let hunk):
+            Button { focus = hunk } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text("Conflict \(hunk + 1): check lines in A or B above")
+                    Spacer(minLength: 0)
+                }
+                .font(.caption.bold())
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.15))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func line(_ num: Int?, _ text: String, bar: Color?) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(num.map(String.init) ?? "")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .frame(width: 36, alignment: .trailing)
+            Text(ConflictStyle.display(text))
+                .font(ConflictStyle.font)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 1)
+        .padding(.trailing, 6)
+        .overlay(alignment: .leading) { if let bar { Rectangle().fill(bar).frame(width: 3) } }
+    }
+
+    /// The output as text; conflicts with nothing picked keep their markers to edit by hand.
+    private func editableText() -> String {
+        var lines: [String] = []
+        for line in conflict.output(model.conflictPicks) {
+            switch line {
+            case .text(let text), .picked(let text, _, _):
+                lines.append(text)
+            case .unresolved(let id):
+                guard let hunk = conflict.hunks.first(where: { $0.id == id }) else { continue }
+                lines.append("<<<<<<< \(hunk.oursLabel)")
+                lines += hunk.ours
+                lines.append("=======")
+                lines += hunk.theirs
+                lines.append(">>>>>>> \(hunk.theirsLabel)")
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 }

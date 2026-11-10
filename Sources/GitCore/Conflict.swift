@@ -17,19 +17,6 @@ public struct ConflictFile: Sendable {
         public let theirsLabel: String
     }
 
-    public enum Resolution: String, CaseIterable, Identifiable, Sendable {
-        case ours, theirs, oursThenTheirs, theirsThenOurs
-        public var id: String { rawValue }
-        public var label: String {
-            switch self {
-            case .ours: return "Ours"
-            case .theirs: return "Theirs"
-            case .oursThenTheirs: return "Both (ours first)"
-            case .theirsThenOurs: return "Both (theirs first)"
-            }
-        }
-    }
-
     public let segments: [Segment]
 
     public var hunks: [Hunk] {
@@ -93,23 +80,100 @@ public struct ConflictFile: Sendable {
         self.segments = segments
     }
 
-    /// The file contents with every hunk resolved, or nil while any hunk has no choice yet.
-    public func resolved(with choices: [Int: Resolution]) -> String? {
-        var out: [String] = []
+    /// One line of the result: picked from a side, plain text both sides share, or a conflict
+    /// with nothing picked yet.
+    public enum OutputLine: Sendable, Equatable {
+        case text(String)
+        case picked(String, ConflictPicks.Side, hunk: Int)
+        case unresolved(hunk: Int)
+    }
+
+    /// The result with `picks` applied. In each conflict, the lines of the side picked first come
+    /// first; each side's lines keep their order.
+    public func output(_ picks: ConflictPicks) -> [OutputLine] {
+        var out: [OutputLine] = []
         for segment in segments {
             switch segment {
             case .text(let lines):
-                out.append(contentsOf: lines)
+                out += lines.map(OutputLine.text)
             case .conflict(let hunk):
-                guard let choice = choices[hunk.id] else { return nil }
-                switch choice {
-                case .ours: out.append(contentsOf: hunk.ours)
-                case .theirs: out.append(contentsOf: hunk.theirs)
-                case .oursThenTheirs: out.append(contentsOf: hunk.ours + hunk.theirs)
-                case .theirsThenOurs: out.append(contentsOf: hunk.theirs + hunk.ours)
+                guard picks.isResolved(hunk.id) else { out.append(.unresolved(hunk: hunk.id)); continue }
+                let order: [ConflictPicks.Side] = picks.firstSide(hunk.id) == .theirs ? [.theirs, .ours] : [.ours, .theirs]
+                for side in order {
+                    let lines = side == .ours ? hunk.ours : hunk.theirs
+                    for (i, line) in lines.enumerated() where picks.contains(.init(hunk: hunk.id, side: side, index: i)) {
+                        out.append(.picked(line, side, hunk: hunk.id))
+                    }
                 }
             }
         }
-        return out.joined(separator: "\n")
+        return out
+    }
+
+    /// The file contents with `picks` applied, or nil while a conflict has nothing picked.
+    public func resolved(_ picks: ConflictPicks) -> String? {
+        var lines: [String] = []
+        for line in output(picks) {
+            switch line {
+            case .text(let text), .picked(let text, _, _): lines.append(text)
+            case .unresolved: return nil
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// Which lines of each conflict go into the result, picked side by side (A = ours, B = theirs).
+public struct ConflictPicks: Sendable, Equatable {
+    public enum Side: Sendable, Hashable { case ours, theirs }
+
+    public struct Line: Hashable, Sendable {
+        public let hunk: Int
+        public let side: Side
+        /// The line within that side of the conflict. `Line.whole` stands for a side with no lines,
+        /// so picking "nothing from this side" still resolves the conflict.
+        public let index: Int
+        public static let whole = -1
+        public init(hunk: Int, side: Side, index: Int) {
+            self.hunk = hunk
+            self.side = side
+            self.index = index
+        }
+    }
+
+    public private(set) var lines: Set<Line> = []
+    private var first: [Int: Side] = [:]
+
+    public init() {}
+
+    public var isEmpty: Bool { lines.isEmpty }
+    public func contains(_ line: Line) -> Bool { lines.contains(line) }
+    public func isResolved(_ hunk: Int) -> Bool { lines.contains { $0.hunk == hunk } }
+    /// The side picked first in a conflict; its lines come first in the result.
+    public func firstSide(_ hunk: Int) -> Side? { first[hunk] }
+
+    public mutating func toggle(_ line: Line) {
+        set([line], picked: !lines.contains(line))
+    }
+
+    public mutating func set(_ toSet: [Line], picked: Bool) {
+        for line in toSet {
+            if picked {
+                if !isResolved(line.hunk) { first[line.hunk] = line.side }
+                lines.insert(line)
+            } else {
+                lines.remove(line)
+                if first[line.hunk] == line.side, !lines.contains(where: { $0.hunk == line.hunk && $0.side == line.side }) {
+                    first[line.hunk] = isResolved(line.hunk) ? (line.side == .ours ? .theirs : .ours) : nil
+                }
+            }
+        }
+    }
+
+    /// Every line of `side` in `hunk` (or the empty side itself).
+    public static func all(_ side: Side, of hunk: ConflictFile.Hunk) -> [Line] {
+        let count = side == .ours ? hunk.ours.count : hunk.theirs.count
+        return count == 0 ? [Line(hunk: hunk.id, side: side, index: Line.whole)]
+            : (0..<count).map { Line(hunk: hunk.id, side: side, index: $0) }
     }
 }

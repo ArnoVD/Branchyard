@@ -59,6 +59,10 @@ The Pull button's dropdown switches the mode too.
   graph (or right-click → Hide in Graph); right-click a remote → Hide its branches. Solo shows
   only that branch and the one you're on. A bar above the graph shows what's hidden, with
   Show All or Exit Solo. Saved per repository.
+- **Merge conflicts:** click a conflicted file. A (yours) and B (theirs) sit side by side; tick
+  single lines, a whole conflict, or a whole side with the checkbox in its header. The Output
+  below shows the result as you pick (lines picked first come first); ▲▼ jump between
+  conflicts, Edit lets you change the result by hand, Save marks the file resolved.
 - **Amend:** Commit options → "Amend previous commit" rewrites the last commit with the
   staged files and the edited message.
 - **Force push:** when the remote has commits you don't have, Push offers Force Push

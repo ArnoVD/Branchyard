@@ -77,7 +77,9 @@ final class RepoModel: ObservableObject, Identifiable {
     /// Added/removed lines picked in the diff, for staging, unstaging or discarding just those.
     @Published var selectedLineIDs: Set<Int> = []
     @Published var conflict: ConflictFile?
-    @Published var conflictChoices: [Int: ConflictFile.Resolution] = [:]
+    @Published var conflictPicks = ConflictPicks()
+    /// The output text edited by hand in the resolver; replaces the picks when saving.
+    @Published var conflictEditedText: String?
     @Published var detailError: String?
 
     // History graph (middle pane) and the commit picked in it (right pane).
@@ -392,7 +394,8 @@ final class RepoModel: ObservableObject, Identifiable {
                 let parsed = ConflictFile(contents: text)
                 guard selectedChangeID == key else { return }
                 if detailKey != key || conflict?.hunks.count != parsed.hunks.count {
-                    conflictChoices = [:]
+                    conflictPicks = ConflictPicks()
+                    conflictEditedText = nil
                 }
                 conflict = parsed
                 diff = []
@@ -992,7 +995,7 @@ final class RepoModel: ObservableObject, Identifiable {
     // MARK: conflicts
 
     func saveResolution(for change: FileChange) {
-        guard let conflict, let text = conflict.resolved(with: conflictChoices) else { return }
+        guard let conflict, let text = conflictEditedText ?? conflict.resolved(conflictPicks) else { return }
         run("Saving resolution…") {
             self.toastTitle = "Resolution Saved"
             self.toastDetail = change.path
@@ -1023,7 +1026,8 @@ final class RepoModel: ObservableObject, Identifiable {
     private func selectNextConflict(after change: FileChange) {
         let next = status.conflicted.first { $0.path != change.path }
         selectedChangeID = next?.id
-        conflictChoices = [:]
+        conflictPicks = ConflictPicks()
+        conflictEditedText = nil
     }
 
     func abortOperation() {

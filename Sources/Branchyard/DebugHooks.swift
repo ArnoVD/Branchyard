@@ -6,6 +6,8 @@ import GitCore
 /// - `BRANCHYARD_SELECT_FIRST_FILE=1` opens the diff of the first changed file.
 /// - `BRANCHYARD_COMMIT=<message>` commits what's staged after 1.5 s, pushing too when
 ///   "Push after committing" is on.
+/// - `BRANCHYARD_CONFLICT_PICKS=<hunk>:a|b:<line>,…` picks those conflict lines after 2.5 s
+///   (line `*` = all of that side), e.g. `0:b:*,0:a:2`.
 /// - `BRANCHYARD_AMEND=1` turns on "Amend previous commit" after 1 s.
 /// - `BRANCHYARD_SHEET=tag|rename|upstream` opens that sheet (HEAD / current branch) after 1.5 s.
 /// - `BRANCHYARD_SEARCH=<text>` opens commit search with that text after 1.5 s.
@@ -26,6 +28,19 @@ enum DebugHooks {
             // Opens the diff of the first changed file once the repository has loaded.
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 state.selectedTab?.selectedChangeID = state.selectedTab?.status.allChanges.first?.id
+            }
+        }
+        if let spec = env["BRANCHYARD_CONFLICT_PICKS"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                guard let tab = state.selectedTab, let conflict = tab.conflict else { return }
+                for part in spec.split(separator: ",") {
+                    let f = part.split(separator: ":").map(String.init)
+                    guard f.count == 3, let id = Int(f[0]), let hunk = conflict.hunks.first(where: { $0.id == id }) else { continue }
+                    let side: ConflictPicks.Side = f[1] == "b" ? .theirs : .ours
+                    let lines = f[2] == "*" ? ConflictPicks.all(side, of: hunk)
+                        : Int(f[2]).map { [ConflictPicks.Line(hunk: id, side: side, index: $0)] } ?? []
+                    tab.conflictPicks.set(lines, picked: true)
+                }
             }
         }
         if env["BRANCHYARD_AMEND"] != nil {
