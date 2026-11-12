@@ -8,6 +8,8 @@ import GitCore
 ///   "Push after committing" is on.
 /// - `BRANCHYARD_CONFLICT_PICKS=<hunk>:a|b:<line>,…` picks those conflict lines after 2.5 s
 ///   (line `*` = all of that side), e.g. `0:b:*,0:a:2`.
+/// - `BRANCHYARD_PUSH=<branch>` presses Push after 1.5 s; for a new branch it then pushes to that
+///   remote branch after 3 s (empty: leaves the push bar open).
 /// - `BRANCHYARD_AMEND=1` turns on "Amend previous commit" after 1 s.
 /// - `BRANCHYARD_SHEET=tag|rename|upstream` opens that sheet (HEAD / current branch) after 1.5 s.
 /// - `BRANCHYARD_SEARCH=<text>` opens commit search with that text after 1.5 s.
@@ -40,6 +42,16 @@ enum DebugHooks {
                     let lines = f[2] == "*" ? ConflictPicks.all(side, of: hunk)
                         : Int(f[2]).map { [ConflictPicks.Line(hunk: id, side: side, index: $0)] } ?? []
                     tab.conflictPicks.set(lines, picked: true)
+                }
+            }
+        }
+        if let target = env["BRANCHYARD_PUSH"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { state.selectedTab?.push() }
+            if !target.isEmpty {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    guard let tab = state.selectedTab, var request = tab.pushTarget else { return }
+                    request.target = target
+                    tab.push(to: request)
                 }
             }
         }

@@ -687,5 +687,12 @@ let manyCount = await withTaskGroup(of: Bool.self) { group in
 manyDone.done = true
 check(manyCount == 200, "200 git commands at once finish")
 
+// First push of a branch under another name on the remote.
+try await repo.createBranch("topic/local", at: "HEAD")
+try await repo.push(branch: "topic/local", to: "origin", as: "topic/remote-name")
+let pushed = try await repo.branches()
+check(pushed.contains { $0.name == "topic/local" && $0.upstream == "origin/topic/remote-name" }, "first push to another name tracks it")
+check(pushed.contains { $0.name == "origin/topic/remote-name" && $0.isRemote }, "first push creates the remote branch")
+
 print(failures == 0 ? "\nAll checks passed." : "\n\(failures) check(s) failed.")
 exit(failures == 0 ? 0 : 1)

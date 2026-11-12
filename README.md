@@ -67,6 +67,8 @@ The Pull button's dropdown switches the mode too.
   staged files and the edited message.
 - **Force push:** when the remote has commits you don't have, Push offers Force Push
   (`--force-with-lease`) or Pull First.
+- **New branches:** the first Push of a branch the remote doesn't have asks, in a bar under the
+  tabs, which remote and branch to push to (same name by default). The branch then tracks it.
 - **Tags:** right-click a commit → Create Tag Here…; right-click a tag to push or delete it.
 - **Branches:** right-click a branch to push it, rename it or set its upstream.
 - **Ignore:** right-click a file → Ignore, for that file, its extension or its folder.

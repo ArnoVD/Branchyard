@@ -14,6 +14,10 @@ struct RepoView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let request = model.pushTarget {
+                PushTargetBar(model: model, request: request)
+                    .id(request.branch)
+            }
             ActionBar(model: model)
             if model.opState != .none {
                 OperationBanner(model: model)
@@ -590,6 +594,54 @@ private struct OperationBanner: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 6)
         .background(Color.orange.opacity(0.12))
+    }
+}
+
+/// First push of a branch: which remote and remote branch it should push to and pull from.
+private struct PushTargetBar: View {
+    @ObservedObject var model: RepoModel
+    @ViewState private var request: PushTargetRequest
+    @FocusState private var focused: Bool
+
+    init(model: RepoModel, request: PushTargetRequest) {
+        self.model = model
+        _request = ViewState(initialValue: request)
+    }
+
+    private var valid: Bool {
+        let name = request.target.trimmingCharacters(in: .whitespaces)
+        return !name.isEmpty && !name.contains(" ") && !name.hasPrefix("-")
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Spacer(minLength: 0)
+            Text("What remote/branch should “\(request.branch)” push to and pull from?")
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Picker("Remote", selection: $request.remote) {
+                ForEach(request.remotes, id: \.self) { Text($0).tag($0) }
+            }
+            .labelsHidden()
+            .fixedSize()
+            Text("/").foregroundStyle(.secondary)
+            TextField("branch", text: $request.target)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 260)
+                .focused($focused)
+                .onSubmit { if valid { model.push(to: request) } }
+            Button("Push") { model.push(to: request) }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!valid || model.busy != nil)
+            Button("Cancel") { model.pushTarget = nil }
+                .keyboardShortcut(.cancelAction)
+            Spacer(minLength: 0)
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(Color.accentColor.opacity(0.18))
+        .onAppear { focused = true }
     }
 }
 

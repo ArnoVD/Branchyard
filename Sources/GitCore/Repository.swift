@@ -254,6 +254,11 @@ public struct Repository: Sendable, Hashable {
         }
     }
 
+    /// First push of a branch: pushes local `branch` to `remote` as `target` and tracks it there.
+    public func push(branch: String, to remote: String, as target: String) async throws {
+        try await git.run(["push", "-u", remote, "refs/heads/\(branch):refs/heads/\(target)"])
+    }
+
     /// "origin" when it exists, else the first remote.
     public func defaultRemote() async throws -> String {
         let remotes = try await remotes()

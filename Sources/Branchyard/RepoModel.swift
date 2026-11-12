@@ -23,6 +23,14 @@ struct BranchRequest: Identifiable {
 }
 
 /// A push the remote rejected because it has commits we don't.
+/// A branch the remote doesn't have yet: where its first push goes (asked in a bar above the toolbar).
+struct PushTargetRequest: Equatable {
+    let branch: String
+    let remotes: [String]
+    var remote: String
+    var target: String
+}
+
 struct ForcePushOffer: Identifiable {
     let id = UUID()
     let status: RepoStatus
@@ -140,6 +148,7 @@ final class RepoModel: ObservableObject, Identifiable {
     @Published var newTagRequest: NewTagRequest?
     @Published var branchRequest: BranchRequest?
     @Published var forcePushOffer: ForcePushOffer?
+    @Published var pushTarget: PushTargetRequest?
     /// "Reset to This Commit → Hard", waiting for confirmation.
     @Published var hardResetRequest: Commit?
     /// The command palette (⌘P).
@@ -652,10 +661,14 @@ final class RepoModel: ObservableObject, Identifiable {
     func push() {
         let current = status
         // Nowhere to push yet: offer to create the repository on GitHub.
+        // A new branch: ask which remote branch to push to (same name by default).
         if current.upstream == nil {
             Task {
-                if let remotes = try? await self.repo.remotes(), remotes.isEmpty {
+                let remotes = (try? await self.repo.remotes()) ?? []
+                if remotes.isEmpty {
                     self.showPublish = true
+                } else if let branch = current.branch {
+                    self.askPushTarget(for: branch, remotes: remotes)
                 } else {
                     self.pushNow(current)
                 }
@@ -663,6 +676,23 @@ final class RepoModel: ObservableObject, Identifiable {
             return
         }
         pushNow(current)
+    }
+
+    private func askPushTarget(for branch: String, remotes: [String]) {
+        pushTarget = PushTargetRequest(branch: branch, remotes: remotes,
+                                       remote: remotes.contains("origin") ? "origin" : remotes[0],
+                                       target: branch)
+    }
+
+    /// Pushes a new branch where the push bar says, and tracks it there.
+    func push(to request: PushTargetRequest) {
+        let target = request.target.trimmingCharacters(in: .whitespaces)
+        guard !target.isEmpty else { return }
+        pushTarget = nil
+        run("Pushing \(request.branch)…", on: .push) {
+            try await self.repo.push(branch: request.branch, to: request.remote, as: target)
+            self.toastDetail = "\(request.branch) pushed to \(request.remote)/\(target)"
+        }
     }
 
     /// Creates `name` on the active profile's GitHub account, adds it as a remote and pushes.
@@ -922,6 +952,14 @@ final class RepoModel: ObservableObject, Identifiable {
     /// Pushes any local branch, checked out or not.
     func pushBranch(_ branch: Branch) {
         if branch.isCurrent { push(); return }
+        if branch.upstream == nil || branch.upstreamGone {
+            Task {
+                let remotes = (try? await self.repo.remotes()) ?? []
+                if remotes.isEmpty { self.errorMessage = "This repository has no remotes." }
+                else { self.askPushTarget(for: branch.name, remotes: remotes) }
+            }
+            return
+        }
         run("Pushing \(branch.name)…", on: .push) {
             try await self.repo.pushBranch(branch)
             if let upstream = branch.upstream, !branch.upstreamGone {
