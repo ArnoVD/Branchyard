@@ -72,8 +72,16 @@ public struct Git: Sendable {
         env["GIT_OPTIONAL_LOCKS"] = "0"
         // SSH: fail instead of hanging on a passphrase prompt; trust a host the first
         // time it is seen (same as answering "yes" once in Terminal).
+        // Give up when the server can't be reached or stops answering, instead of waiting forever
+        // (a network that blocks SSH used to leave Pull spinning and fetches piling up).
         if env["GIT_SSH_COMMAND"] == nil {
             env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+                + " -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+        }
+        // HTTPS remotes: give up after a minute below 1 KB/s.
+        if env["GIT_HTTP_LOW_SPEED_LIMIT"] == nil {
+            env["GIT_HTTP_LOW_SPEED_LIMIT"] = "1000"
+            env["GIT_HTTP_LOW_SPEED_TIME"] = "60"
         }
         // The active profile: commit author and GitHub sign-in, without touching ~/.gitconfig.
         for (k, v) in GitIdentity.environment(for: directory) { env[k] = v }
@@ -95,6 +103,8 @@ public struct Git: Sendable {
         process.standardInput = FileHandle.nullDevice
 
         try process.run()
+        Running.add(process)
+        defer { Running.remove(process) }
 
         // Drain both pipes concurrently so a large stdout can't deadlock on a full stderr buffer.
         final class Box: @unchecked Sendable { var data = Data() }
@@ -115,6 +125,30 @@ public struct Git: Sendable {
             stdout: String(decoding: outBox.data, as: UTF8.self),
             stderr: String(decoding: errData, as: UTF8.self)
         )
+    }
+}
+
+/// git commands still running, so quitting the app can stop them (and the ssh they started)
+/// instead of leaving them behind.
+enum Running {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var processes: [ObjectIdentifier: Process] = [:]
+
+    static func add(_ p: Process) { lock.withLock { processes[ObjectIdentifier(p)] = p } }
+    static func remove(_ p: Process) { lock.withLock { _ = processes.removeValue(forKey: ObjectIdentifier(p)) } }
+    static var all: [Process] { lock.withLock { Array(processes.values) } }
+}
+
+extension Git {
+    /// Stops every running git command and its child processes (ssh, hooks). For app quit.
+    public static func terminateAll() {
+        for process in Running.all where process.isRunning {
+            let pid = process.processIdentifier
+            var children = [pid_t](repeating: 0, count: 64)
+            let n = proc_listchildpids(pid, &children, Int32(children.count * MemoryLayout<pid_t>.size))
+            for child in children.prefix(max(0, Int(n))) where child > 0 { kill(child, SIGTERM) }
+            process.terminate()
+        }
     }
 }
 

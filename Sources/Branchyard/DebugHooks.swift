@@ -10,6 +10,7 @@ import GitCore
 ///   (line `*` = all of that side), e.g. `0:b:*,0:a:2`.
 /// - `BRANCHYARD_PUSH=<branch>` presses Push after 1.5 s; for a new branch it then pushes to that
 ///   remote branch after 3 s (empty: leaves the push bar open).
+/// - `BRANCHYARD_PULL=1` presses Pull after 1.5 s.
 /// - `BRANCHYARD_AMEND=1` turns on "Amend previous commit" after 1 s.
 /// - `BRANCHYARD_SHEET=tag|rename|upstream` opens that sheet (HEAD / current branch) after 1.5 s.
 /// - `BRANCHYARD_SEARCH=<text>` opens commit search with that text after 1.5 s.
@@ -44,6 +45,9 @@ enum DebugHooks {
                     tab.conflictPicks.set(lines, picked: true)
                 }
             }
+        }
+        if env["BRANCHYARD_PULL"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { state.selectedTab?.pull() }
         }
         if let target = env["BRANCHYARD_PUSH"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { state.selectedTab?.push() }

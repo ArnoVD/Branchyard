@@ -439,7 +439,7 @@ final class RepoModel: ObservableObject, Identifiable {
         skipToast = false
         Task {
             var ok = true
-            do { try await operation() } catch { ok = false; errorMessage = error.localizedDescription }
+            do { try await operation() } catch { ok = false; errorMessage = Self.explain(error) }
             let activity = Activity(label: label, succeeded: ok, date: Date())
             lastActivity = activity
             busy = nil
@@ -625,11 +625,35 @@ final class RepoModel: ObservableObject, Identifiable {
 
     /// Fetches quietly in the background (auto-fetch): no spinner, toast or error alert.
     func autoFetch() {
-        guard busy == nil, loaded, !remotes.isEmpty else { return }
+        guard busy == nil, loaded, !remotes.isEmpty, !autoFetching else { return }
+        autoFetching = true
         Task {
+            defer { autoFetching = false }
             guard (try? await repo.fetch()) != nil else { return }
             await refresh()
         }
+    }
+    private var autoFetching = false
+
+    /// The error to show, with what to do when git couldn't reach the server.
+    static func explain(_ error: Error) -> String {
+        let text = error.localizedDescription
+        let unreachable = ["No route to host", "timed out", "Connection refused", "Network is unreachable",
+                           "Timeout, server", "Could not resolve host", "Could not resolve hostname"]
+        guard unreachable.contains(where: { text.localizedCaseInsensitiveContains($0) }) else { return text }
+        let match = (try? Regex(#"connect to host (\S+) port (\d+)"#)).flatMap { text.firstMatch(of: $0) }
+        let host = match.flatMap { $0.output[1].substring.map(String.init) } ?? "the server"
+        let port = match.flatMap { $0.output[2].substring.map(String.init) }
+        var message = "Couldn't reach \(host)\(port.map { " (port \($0))" } ?? ""). Check your internet connection"
+        guard port == "22" else { return message + ".\n\n" + text }
+        message += "; the network you're on may block SSH."
+        let alternative = host.contains("bitbucket") ? "altssh.bitbucket.org"
+            : host.contains("github") ? "ssh.github.com" : nil
+        if let alternative {
+            message += " \(host) also accepts SSH on port 443. Add this to ~/.ssh/config:\n\n"
+                + "Host \(host)\n  HostName \(alternative)\n  Port 443"
+        }
+        return message + "\n\n" + text
     }
 
     /// `mode` also becomes the default for the Pull button.
