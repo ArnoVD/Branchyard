@@ -126,8 +126,9 @@ public enum Parsers {
         var newNo = 0
         var inHunk = false
 
-        for (index, sub) in raw.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
-            let text = String(sub)
+        for (index, full) in raw.splitLines().enumerated() {
+            let crlf = full.endsWithCR
+            let text = full.droppingCR
             if text.hasPrefix("diff --git") || (!inHunk && (text.hasPrefix("--- ") || text.hasPrefix("+++ "))) {
                 inHunk = false
                 lines.append(DiffLine(id: index, kind: .fileHeader, text: text, oldNumber: nil, newNumber: nil))
@@ -136,13 +137,13 @@ public enum Parsers {
                 (oldNo, newNo) = hunkStart(text)
                 lines.append(DiffLine(id: index, kind: .hunk, text: text, oldNumber: nil, newNumber: nil))
             } else if inHunk && text.hasPrefix("+") {
-                lines.append(DiffLine(id: index, kind: .added, text: text, oldNumber: nil, newNumber: newNo))
+                lines.append(DiffLine(id: index, kind: .added, text: text, oldNumber: nil, newNumber: newNo, crlf: crlf))
                 newNo += 1
             } else if inHunk && text.hasPrefix("-") {
-                lines.append(DiffLine(id: index, kind: .removed, text: text, oldNumber: oldNo, newNumber: nil))
+                lines.append(DiffLine(id: index, kind: .removed, text: text, oldNumber: oldNo, newNumber: nil, crlf: crlf))
                 oldNo += 1
             } else if inHunk && text.hasPrefix(" ") {
-                lines.append(DiffLine(id: index, kind: .context, text: text, oldNumber: oldNo, newNumber: newNo))
+                lines.append(DiffLine(id: index, kind: .context, text: text, oldNumber: oldNo, newNumber: newNo, crlf: crlf))
                 oldNo += 1
                 newNo += 1
             } else if text.isEmpty {

@@ -18,6 +18,9 @@ public struct ConflictFile: Sendable {
     }
 
     public let segments: [Segment]
+    /// "\r\n" for a file with Windows line endings, else "\n". Lines are kept without the "\r";
+    /// the result gets it back.
+    public let lineEnding: String
 
     public var hunks: [Hunk] {
         segments.compactMap { if case .conflict(let h) = $0 { return h } else { return nil } }
@@ -35,10 +38,13 @@ public struct ConflictFile: Sendable {
         var nextID = 0
 
         func isMarker(_ line: String, _ marker: String) -> Bool {
-            line == marker || line.hasPrefix(marker + " ") || line == marker + "\r"
+            line == marker || line.hasPrefix(marker + " ")
         }
 
-        for line in contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+        let all = contents.splitLines()
+        let withCR = all.filter(\.endsWithCR).count
+        lineEnding = withCR > 0 && withCR * 2 >= all.filter { !$0.isEmpty }.count ? "\r\n" : "\n"
+        for line in all.map(\.droppingCR) {
             switch state {
             case .text:
                 if isMarker(line, "<<<<<<<") {
@@ -119,7 +125,12 @@ public struct ConflictFile: Sendable {
             case .unresolved: return nil
             }
         }
-        return lines.joined(separator: "\n")
+        return lines.joined(separator: lineEnding)
+    }
+
+    /// `text` (edited by hand, with "\n" line breaks) with this file's line endings.
+    public func withLineEndings(_ text: String) -> String {
+        lineEnding == "\n" ? text : text.splitLines().map(\.droppingCR).joined(separator: lineEnding)
     }
 }
 

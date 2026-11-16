@@ -1089,7 +1089,8 @@ final class RepoModel: ObservableObject, Identifiable {
     // MARK: conflicts
 
     func saveResolution(for change: FileChange) {
-        guard let conflict, let text = conflictEditedText ?? conflict.resolved(conflictPicks) else { return }
+        guard let conflict,
+              let text = conflictEditedText.map(conflict.withLineEndings) ?? conflict.resolved(conflictPicks) else { return }
         run("Saving resolution…") {
             self.toastTitle = "Resolution Saved"
             self.toastDetail = change.path

@@ -949,7 +949,7 @@ private struct ConflictOutputView: View {
 
     private var canSave: Bool {
         if let text = model.conflictEditedText {
-            return !text.split(separator: "\n", omittingEmptySubsequences: false)
+            return !text.splitLines()
                 .contains { $0.hasPrefix("<<<<<<<") || $0.hasPrefix(">>>>>>>") }
         }
         return open == 0

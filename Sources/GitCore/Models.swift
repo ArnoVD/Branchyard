@@ -131,13 +131,17 @@ public struct DiffLine: Identifiable, Hashable, Sendable {
     public let text: String
     public let oldNumber: Int?
     public let newNumber: Int?
+    /// The line ended with "\r\n" in the file (Windows line endings). `text` leaves the "\r" out;
+    /// patches built from the line put it back.
+    public let crlf: Bool
 
-    public init(id: Int, kind: Kind, text: String, oldNumber: Int?, newNumber: Int?) {
+    public init(id: Int, kind: Kind, text: String, oldNumber: Int?, newNumber: Int?, crlf: Bool = false) {
         self.id = id
         self.kind = kind
         self.text = text
         self.oldNumber = oldNumber
         self.newNumber = newNumber
+        self.crlf = crlf
     }
 }
 

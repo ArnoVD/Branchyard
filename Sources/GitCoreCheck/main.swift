@@ -464,6 +464,40 @@ gs = try await hr.status()
 check(try await out(hr, "show", ":g.txt") == "a\nB\nc" && !gs.unstaged.contains { $0.path == "g.txt" },
       "stage every line of a file without a final newline")
 
+// MARK: Windows line endings (CRLF)
+// Swift treats "\r\n" as one Character, so splitting text on "\n" missed every line break of a
+// CRLF file and showed its whole diff as one line.
+try await sh(hk, "reset", "-q", "--hard")
+let crlfBase = (1...10).map { "line \($0)" }
+func crlf(_ l: [String]) -> String { l.joined(separator: "\r\n") + "\r\n" }
+try crlf(crlfBase).write(to: hk.appendingPathComponent("w.txt"), atomically: true, encoding: .utf8)
+try await hr.stage(["w.txt"]); try await hr.commit(message: "crlf")
+var crlfEdited = crlfBase; crlfEdited[1] = "two"; crlfEdited[8] = "nine"
+try crlf(crlfEdited).write(to: hk.appendingPathComponent("w.txt"), atomically: true, encoding: .utf8)
+var wd = try await hr.diff(for: try await hr.status().unstaged.first { $0.path == "w.txt" }!)
+check(wd.contains { $0.kind == .added && $0.text == "+two" } && wd.contains { $0.kind == .removed && $0.text == "-line 2" },
+      "CRLF file: the diff is split into lines")
+check(!wd.contains { $0.text.unicodeScalars.contains("\r") }, "CRLF file: no carriage returns in the shown lines")
+check(wd.first { $0.text == "+two" }?.newNumber == 2 && wd.first { $0.text == "+nine" }?.newNumber == 9,
+      "CRLF file: line numbers")
+try await hr.stageLines(ids(wd, "-line 2", "+two"), of: wd, path: "w.txt")
+var crlfStaged = crlfBase; crlfStaged[1] = "two"
+check(try await Git(directory: hk).run(["show", ":w.txt"]).stdout == crlf(crlfStaged),
+      "CRLF file: stage one hunk keeps the CRLF line endings")
+wd = try await hr.diff(for: try await hr.status().unstaged.first { $0.path == "w.txt" }!)
+_ = try await hr.discardLines(ids(wd, "-line 9", "+nine"), of: wd, path: "w.txt")
+check(try String(contentsOf: hk.appendingPathComponent("w.txt"), encoding: .utf8) == crlf(crlfStaged),
+      "CRLF file: discard one hunk keeps the CRLF line endings")
+let crlfConflict = ConflictFile(contents: "a\r\n<<<<<<< HEAD\r\nours\r\n=======\r\ntheirs\r\n>>>>>>> b\r\nz\r\n")
+check(crlfConflict.hunks.count == 1 && crlfConflict.hunks.first?.ours == ["ours"]
+      && crlfConflict.hunks.first?.theirsLabel == "b", "CRLF conflict: the hunk is found")
+var crlfPicks = ConflictPicks()
+if let h = crlfConflict.hunks.first { crlfPicks.set(ConflictPicks.all(.theirs, of: h), picked: true) }
+check(crlfConflict.resolved(crlfPicks) == "a\r\ntheirs\r\nz\r\n", "CRLF conflict: the result keeps CRLF")
+check(crlfConflict.withLineEndings("a\ntheirs\nz\n") == "a\r\ntheirs\r\nz\r\n", "CRLF conflict: edited text gets CRLF")
+let crlfBlame = try await hr.blame("w.txt")
+check(crlfBlame.lines.count == 10 && crlfBlame.lines.first?.text == "line 1", "CRLF file: blame splits lines")
+
 // MARK: cherry-pick, revert, reset
 let ca = root.appendingPathComponent("commitactions")
 try FileManager.default.createDirectory(at: ca, withIntermediateDirectories: true)

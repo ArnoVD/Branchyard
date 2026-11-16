@@ -77,9 +77,9 @@ extension Parsers {
         var fields: [String: [String: String]] = [:]
         var sha = ""
         var number = 0
-        for line in raw.split(separator: "\n", omittingEmptySubsequences: false) {
+        for line in raw.splitLines() {
             if line.hasPrefix("\t") {
-                lines.append(Blame.Line(number: number, sha: sha, text: String(line.dropFirst())))
+                lines.append(Blame.Line(number: number, sha: sha, text: String(line.dropFirst()).droppingCR))
                 continue
             }
             let parts = line.split(separator: " ", maxSplits: 1)

@@ -54,7 +54,7 @@ public enum PartialPatch {
                     break
                 }
                 if let out {
-                    body.append(out)
+                    body.append(line.crlf ? out + "\r" : out)
                     switch out.first {
                     case "+": newCount += 1
                     case "-": oldCount += 1

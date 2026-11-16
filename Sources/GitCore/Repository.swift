@@ -198,7 +198,7 @@ public struct Repository: Sendable, Hashable {
     public func ignore(_ patterns: [String], untrack paths: [String] = []) async throws {
         let file = url.appendingPathComponent(".gitignore")
         var text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let lines = text.splitLines().map(\.droppingCR)
         let missing = patterns.reduce(into: [String]()) { list, p in
             if !lines.contains(p) && !list.contains(p) { list.append(p) }
         }
