@@ -14,7 +14,8 @@ struct ChangesPanel: View {
                     title: model.status.conflicted.isEmpty ? "Unstaged Files" : "Unstaged & Conflicts",
                     files: model.status.conflicted + model.status.unstaged,
                     all: ("Stage", model.status.unstaged, { model.stage($0) }),
-                    empty: model.loaded && model.status.isClean ? "Working tree clean" : "No unstaged changes"
+                    empty: model.loaded && model.status.isClean ? "Working tree clean" : "No unstaged changes",
+                    discardAll: { toDiscard = model.status.unstaged }
                 )
                 section(
                     title: "Staged Files",
@@ -68,7 +69,8 @@ struct ChangesPanel: View {
 
     private func section(title: String, files: [FileChange],
                          all: (verb: String, files: [FileChange], run: ([FileChange]) -> Void),
-                         empty: String) -> some View {
+                         empty: String,
+                         discardAll: (() -> Void)? = nil) -> some View {
         let picked = files.filter { model.selectedChangeIDs.contains($0.id) && $0.area != .conflicted }
         return VStack(spacing: 0) {
             HStack(spacing: 6) {
@@ -79,6 +81,21 @@ struct ChangesPanel: View {
                     .padding(.horizontal, 6)
                     .background(Capsule().fill(Color.secondary.opacity(0.15)))
                 Spacer()
+                if let discardAll, !all.files.isEmpty {
+                    Button(action: discardAll) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.red)
+                            .frame(width: 26, height: 20)
+                            .background(RoundedRectangle(cornerRadius: 5).fill(Color.red.opacity(0.08)))
+                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.red.opacity(0.7), lineWidth: 1))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.busy != nil)
+                    .help("Discard all unstaged changes (untracked files are deleted)")
+                    .accessibilityLabel("Discard All Unstaged Changes")
+                }
                 if picked.count > 1 {
                     Button("\(all.verb) \(picked.count) Selected") { all.run(picked) }
                         .controlSize(.small)

@@ -73,6 +73,8 @@ The Pull button's dropdown switches the mode too.
   (sending, or waiting for the server), the server's own messages and the seconds so far.
   Hover the result afterwards to read everything the server said. Git gives up on a server
   that can't be reached or stops answering, instead of loading forever.
+- **Discard all:** the red trash button next to Stage All discards every unstaged change and
+  deletes untracked files, after asking. Undo (⌘Z) brings them back.
 - **Tags:** right-click a commit → Create Tag Here…; right-click a tag to push or delete it.
 - **Branches:** right-click a branch to push it, rename it or set its upstream.
 - **Ignore:** right-click a file → Ignore, for that file, its extension or its folder.
