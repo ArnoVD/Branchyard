@@ -694,5 +694,32 @@ let pushed = try await repo.branches()
 check(pushed.contains { $0.name == "topic/local" && $0.upstream == "origin/topic/remote-name" }, "first push to another name tracks it")
 check(pushed.contains { $0.name == "origin/topic/remote-name" && $0.isRemote }, "first push creates the remote branch")
 
+// MARK: live progress
+// A push run with a progress handler reports git's progress lines as they come,
+// while the result's output stays as plain as without --progress.
+final class Lines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [String] = []
+    func add(_ s: String) { lock.withLock { items.append(s) } }
+    var all: [String] { lock.withLock { items } }
+}
+try await sh(work, "switch", "-q", "-c", "topic/progress")
+try write(work, "progress.txt", String(repeating: "progress line\n", count: 2000))
+try await sh(work, "add", "progress.txt")
+try await sh(work, "commit", "-q", "-m", "progress")
+let progressLines = Lines()
+let progressResult = try await GitProgress.$handler.withValue({ progressLines.add($0) }) {
+    try await Git(directory: work).run(["push", "-u", "origin", "topic/progress"])
+}
+check(progressLines.all.contains { GitProgress.isProgress($0) }, "push reports progress lines live")
+check(progressLines.all.contains { GitProgress.describe($0) == "Sent, waiting for the server to confirm" },
+      "push reports when it waits for the server")
+check(!progressResult.stderr.contains("Writing objects") && progressResult.stderr.contains("topic/progress"),
+      "progress lines are kept out of the command's output")
+let quietResult = try await Git(directory: work).run(["fetch", "origin"])
+check(!quietResult.stderr.contains("objects:"), "no progress without a handler")
+check(GitProgress.describe("remote: Create pull request for x:") == "Server: Create pull request for x:",
+      "server messages are labelled")
+
 print(failures == 0 ? "\nAll checks passed." : "\n\(failures) check(s) failed.")
 exit(failures == 0 ? 0 : 1)

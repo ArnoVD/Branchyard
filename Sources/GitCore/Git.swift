@@ -45,12 +45,21 @@ public struct Git: Sendable {
         environment extraEnv: [String: String] = [:]
     ) async throws -> GitResult {
         let dir = directory
+        // Live progress: only when the caller is listening, and only for network commands
+        // (git hides progress when stderr isn't a terminal unless asked).
+        let progress = GitProgress.handler
+        var args = args
+        if progress != nil, let sub = args.first, GitProgress.networkCommands.contains(sub) {
+            args.insert("--progress", at: 1)
+        }
         // A thread of its own, not Swift's shared pool: runSync blocks until git exits, and a
         // burst of commands (one refresh per open tab) used to fill every pool thread with
         // waiters while the work that reads git's output never got a thread, hanging them all.
         let result: GitResult = try await withCheckedThrowingContinuation { continuation in
             let thread = Thread {
-                continuation.resume(with: Result { try Git.runSync(args, in: dir, extraEnv: extraEnv) })
+                continuation.resume(with: Result {
+                    try Git.runSync(args, in: dir, extraEnv: extraEnv, progress: progress)
+                })
             }
             thread.qualityOfService = .userInitiated
             thread.start()
@@ -89,7 +98,8 @@ public struct Git: Sendable {
         return env
     }
 
-    static func runSync(_ args: [String], in dir: URL, extraEnv: [String: String]) throws -> GitResult {
+    static func runSync(_ args: [String], in dir: URL, extraEnv: [String: String],
+                        progress: GitProgress.Handler? = nil) throws -> GitResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
         process.arguments = args
@@ -116,15 +126,94 @@ public struct Git: Sendable {
             outBox.data = outPipe.fileHandleForReading.readDataToEndOfFile()
             group.leave()
         }.start()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        var stderr: String
+        if let progress {
+            // Read stderr as it arrives and pass each new line on (progress redraws with \r).
+            var errData = Data()
+            var pending = Data()
+            var lastSent = Date.distantPast
+            let handle = errPipe.fileHandleForReading
+            while true {
+                let chunk = handle.availableData
+                if chunk.isEmpty { break }
+                errData.append(chunk)
+                pending.append(chunk)
+                var latest: String?
+                while let end = pending.firstIndex(where: { $0 == 0x0A || $0 == 0x0D }) {
+                    let line = String(decoding: pending[pending.startIndex..<end], as: UTF8.self)
+                        .trimmingCharacters(in: .whitespaces)
+                    pending.removeSubrange(pending.startIndex...end)
+                    guard !line.isEmpty else { continue }
+                    // Server messages always get through; percentage redraws at most 10× a second.
+                    if line.hasPrefix("remote:") && !GitProgress.isProgress(line) {
+                        progress(line)
+                        lastSent = Date()
+                        latest = nil
+                    } else {
+                        latest = line
+                    }
+                }
+                // Always pass on a step's last line: git may go quiet right after it
+                // (after "Total …" a push waits for the server).
+                if let latest, Date().timeIntervalSince(lastSent) >= 0.1
+                    || latest.hasSuffix("done.") || latest.hasPrefix("Total ") {
+                    progress(latest)
+                    lastSent = Date()
+                }
+            }
+            stderr = GitProgress.stripProgress(String(decoding: errData, as: UTF8.self))
+        } else {
+            stderr = String(decoding: errPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        }
         group.wait()
         process.waitUntilExit()
 
         return GitResult(
             exitCode: process.terminationStatus,
             stdout: String(decoding: outBox.data, as: UTF8.self),
-            stderr: String(decoding: errData, as: UTF8.self)
+            stderr: stderr
         )
+    }
+}
+
+/// Live output from push/pull/fetch, for showing what a long operation is doing.
+public enum GitProgress {
+    public typealias Handler = @Sendable (String) -> Void
+
+    /// Set around an operation; every git command inside it reports its stderr lines here.
+    @TaskLocal public static var handler: Handler?
+
+    static let networkCommands: Set<String> = ["push", "pull", "fetch"]
+
+    private static let progressPattern = #/^(remote: +)?(Enumerating|Counting|Compressing|Delta compression|Writing|Receiving|Resolving|Unpacking|Checking|Updating) [a-z ]+: /#
+
+    /// A percentage line ("Writing objects: 40% (2/5)") or git's "Total …" summary.
+    public static func isProgress(_ line: String) -> Bool {
+        let line = line.trimmingCharacters(in: .whitespaces)
+        if line.firstMatch(of: progressPattern) != nil { return true }
+        return line.hasPrefix("Total ") || line.hasPrefix("remote: Total ")
+            || line.hasPrefix("Delta compression using")
+    }
+
+    /// The output as git prints it without --progress: redraws and percentage lines removed,
+    /// so error messages stay readable.
+    public static func stripProgress(_ text: String) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in line.split(separator: "\r").last.map(String.init) ?? "" }
+            .filter { !isProgress($0) }
+            .joined(separator: "\n")
+    }
+
+    /// Short text for the status bar: what git is doing right now.
+    public static func describe(_ line: String) -> String {
+        let line = line.trimmingCharacters(in: .whitespaces)
+        if line.hasPrefix("Total ") { return "Sent, waiting for the server to confirm" }
+        if line.hasPrefix("remote:") {
+            let message = line.dropFirst("remote:".count).trimmingCharacters(in: .whitespaces)
+            if isProgress(line) { return "Server: " + message.replacingOccurrences(of: ", done.", with: "") }
+            return "Server: " + message
+        }
+        return line.replacingOccurrences(of: ", done.", with: "")
     }
 }
 

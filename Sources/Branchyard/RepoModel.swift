@@ -124,6 +124,13 @@ final class RepoModel: ObservableObject, Identifiable {
 
     @Published var commitMessage = ""
     @Published var busy: String?
+    /// When the running operation started, and what git last said about it
+    /// ("Writing objects: 40%", "Server: …"), for the status bar.
+    @Published var busySince: Date?
+    @Published var busyProgress: String?
+    /// Messages the server sent during the running operation ("remote: …" lines).
+    @Published var busyMessages: [String] = []
+    private var busyRun = UUID()
     /// The toolbar button whose operation is running (it shows a spinner).
     @Published var busyAction: ToolAction?
     /// Bottom-left notifications after toolbar actions.
@@ -437,13 +444,29 @@ final class RepoModel: ObservableObject, Identifiable {
         toastDetail = nil
         toastOverride = nil
         skipToast = false
+        let runID = UUID()
+        busyRun = runID
+        busySince = Date()
+        busyProgress = nil
+        busyMessages = []
+        let progress: GitProgress.Handler = { [weak self] line in
+            // Main queue keeps the lines in order.
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.gitProgress(line, run: runID) }
+            }
+        }
         Task {
             var ok = true
-            do { try await operation() } catch { ok = false; errorMessage = Self.explain(error) }
-            let activity = Activity(label: label, succeeded: ok, date: Date())
+            do {
+                try await GitProgress.$handler.withValue(progress) { try await operation() }
+            } catch { ok = false; errorMessage = Self.explain(error) }
+            let activity = Activity(label: label, succeeded: ok, date: Date(), messages: busyMessages)
             lastActivity = activity
             busy = nil
             busyAction = nil
+            busySince = nil
+            busyProgress = nil
+            busyRun = UUID()
             // Conflicts show the banner instead.
             if ok, notice == nil, !skipToast {
                 showToast(toastOverride ?? Toast(title: toastTitle ?? action?.successTitle ?? activity.text,
@@ -451,6 +474,15 @@ final class RepoModel: ObservableObject, Identifiable {
             }
             await refresh()
             if ok, notice == nil { then?() }
+        }
+    }
+
+    private func gitProgress(_ line: String, run: UUID) {
+        guard run == busyRun, busy != nil else { return }  // a late line from a finished run
+        busyProgress = GitProgress.describe(line)
+        if line.hasPrefix("remote:"), !GitProgress.isProgress(line) {
+            let message = line.dropFirst("remote:".count).trimmingCharacters(in: .whitespaces)
+            if !message.isEmpty { busyMessages.append(message) }
         }
     }
 
@@ -1319,6 +1351,8 @@ struct Activity: Equatable {
     let label: String
     let succeeded: Bool
     let date: Date
+    /// What the server said during the operation ("remote: …" lines).
+    var messages: [String] = []
 
     var text: String {
         let verb = label.replacingOccurrences(of: "…", with: "")

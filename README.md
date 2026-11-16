@@ -69,6 +69,10 @@ The Pull button's dropdown switches the mode too.
   (`--force-with-lease`) or Pull First.
 - **New branches:** the first Push of a branch the remote doesn't have asks, in a bar under the
   tabs, which remote and branch to push to (same name by default). The branch then tracks it.
+- **Progress:** while pushing, pulling or fetching, the status bar shows what git is doing
+  (sending, or waiting for the server), the server's own messages and the seconds so far.
+  Hover the result afterwards to read everything the server said. Git gives up on a server
+  that can't be reached or stops answering, instead of loading forever.
 - **Tags:** right-click a commit → Create Tag Here…; right-click a tag to push or delete it.
 - **Branches:** right-click a branch to push it, rename it or set its upstream.
 - **Ignore:** right-click a file → Ignore, for that file, its extension or its folder.

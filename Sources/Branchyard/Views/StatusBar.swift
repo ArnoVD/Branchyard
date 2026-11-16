@@ -119,13 +119,28 @@ private struct RepoStatusItems: View {
             HStack(spacing: 5) {
                 ProgressView().controlSize(.mini)
                 Text(busy)
+                if let progress = model.busyProgress {
+                    Text("· \(progress)").foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                if let since = model.busySince {
+                    // Seconds once it's been a moment, so a slow step visibly isn't frozen.
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let seconds = Int(context.date.timeIntervalSince(since))
+                        if seconds >= 3 {
+                            Text(elapsed(seconds)).monospacedDigit().foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
+            .help(model.busyMessages.joined(separator: "\n"))
         } else if let activity = model.lastActivity {
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 Item(icon: activity.succeeded ? "checkmark" : "xmark",
                      text: "\(activity.text) · \(relative(activity.date, now: context.date))",
                      tint: activity.succeeded ? nil : .red)
             }
+            .help(activity.messages.isEmpty ? "" : "Server said:\n" + activity.messages.joined(separator: "\n"))
         }
     }
 
@@ -133,6 +148,10 @@ private struct RepoStatusItems: View {
         let n = model.graph.filter { !$0.commit.isWIP }.count
         if n >= 1500 { return "1500+ commits" }
         return n == 1 ? "1 commit" : "\(n) commits"
+    }
+
+    private func elapsed(_ seconds: Int) -> String {
+        seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(String(format: "%02d", seconds % 60))s"
     }
 
     private func relative(_ date: Date, now: Date) -> String {
