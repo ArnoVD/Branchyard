@@ -885,7 +885,13 @@ final class RepoModel: ObservableObject, Identifiable {
         }
     }
 
+    /// The row's +/− button. Shows the next file in the same list, so you can click through them all.
     func toggleStage(_ change: FileChange) {
+        let list = change.area == .staged ? status.staged : status.conflicted + status.unstaged
+        if selectedChangeIDs.count <= 1, let i = list.firstIndex(where: { $0.id == change.id }) {
+            let next = list.indices.contains(i + 1) ? list[i + 1] : (i > 0 ? list[i - 1] : nil)
+            if let next { selectedChangeID = next.id }
+        }
         switch change.area {
         case .staged: unstage([change])
         case .unstaged, .conflicted: stage([change])
