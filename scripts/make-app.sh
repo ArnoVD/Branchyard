@@ -39,7 +39,16 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP"
+# Sign with your Apple Development certificate when there is one (Xcode → Settings → Accounts →
+# Manage Certificates). The keychain trusts it by team ID, so it stops asking for your password
+# after every rebuild; ad-hoc signatures change with every build.
+IDENTITY="$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development/ { print $2; exit }')"
+if [[ -n "$IDENTITY" ]]; then
+  codesign --force --deep --sign "$IDENTITY" "$APP"
+else
+  echo "No Apple Development certificate: signing ad-hoc (the keychain will ask again after this install)"
+  codesign --force --deep --sign - "$APP"
+fi
 echo "Built $APP"
 
 if [[ "${1:-}" == "--install" ]]; then
