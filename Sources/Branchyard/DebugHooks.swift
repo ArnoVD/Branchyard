@@ -22,6 +22,8 @@ import GitCore
 ///   1.5 s (saved for that repository); empty shows every branch again.
 /// - `BRANCHYARD_RIGHTCLICK=<x>,<y>` (window points, from the top left) sends a right-click there
 ///   after 4 s, logs any menu that opens with its screen frame, then quits.
+/// - `BRANCHYARD_SNAPSHOT=<dir>` saves the window as `<dir>/snap-<n>.png` every second for 8 s and
+///   logs which file's diff is open.
 enum DebugHooks {
     @MainActor
     static func run(state: AppState) {
@@ -127,6 +129,13 @@ enum DebugHooks {
             }
         }
         if let spec = env["BRANCHYARD_DRAG"] { drag(spec) }
+        if let dir = env["BRANCHYARD_SNAPSHOT"] {
+            for n in 1...8 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Double(n)) {
+                    snapshot(to: "\(dir)/snap-\(n).png", shown: state.selectedTab?.selectedChange)
+                }
+            }
+        }
         guard let spec = env["BRANCHYARD_RIGHTCLICK"] else { return }
         let parts = spec.split(separator: ",").compactMap { Double($0) }
         guard parts.count == 2 else { return }
@@ -157,6 +166,16 @@ enum DebugHooks {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { log("no menu opened"); exit(1) }
         }
+    }
+
+    @MainActor
+    private static func snapshot(to path: String, shown: FileChange?) {
+        guard let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }),
+              let view = window.contentView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+        log("snapshot \(path) size=\(view.bounds.size) shown=\(shown?.id ?? "none")")
     }
 
     private static func log(_ text: String) {
