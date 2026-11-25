@@ -161,6 +161,14 @@ enum EditorPrefs {
         return .system(size: size, design: .monospaced)
     }
 
+    static func nsFont(family: String, size: Double) -> NSFont {
+        if !family.isEmpty,
+           let ns = NSFontManager.shared.font(withFamily: family, traits: [], weight: 5, size: size) {
+            return ns
+        }
+        return .monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+
     static let allFamilies: [String] = NSFontManager.shared.availableFontFamilies.filter { !$0.hasPrefix(".") }
 
     static let monospaceFamilies: [String] = allFamilies.filter { family in

@@ -183,7 +183,8 @@ enum DebugHooks {
     }
 
     /// `BRANCHYARD_DRAG=x1,y1,x2,y2` (window points, from the top left): presses at the first point
-    /// after 2 s, drags to the second and lets go. The same point twice is a click.
+    /// after 2 s, drags to the second and lets go. The same point twice is a click. Logs the text
+/// selected in a text view afterwards.
     @MainActor
     private static func drag(_ spec: String) {
         let p = spec.split(separator: ",").compactMap { Double($0) }
@@ -211,6 +212,10 @@ enum DebugHooks {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 log("drag done, window moved: \(window.frame.origin != before)")
+                if let text = window.firstResponder as? NSTextView {
+                    let selected = text.selectedRanges.map { (text.string as NSString).substring(with: $0.rangeValue) }
+                    log("selected text: \(selected.joined(separator: "|").debugDescription)")
+                }
             }
         }
     }
